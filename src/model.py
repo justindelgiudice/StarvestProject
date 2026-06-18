@@ -1,5 +1,6 @@
 """
-Train and evaluate a linear regression model: NDVI → yield.
+Train and evaluate a linear regression model: NDVI + year → yield.
+Year captures the citrus greening (HLB) disease trend driving long-run decline.
 Saves model coefficients to data/processed/model_params.json.
 """
 
@@ -15,8 +16,11 @@ DATASET_PATH = Path(__file__).parent.parent / "data" / "processed" / "dataset.cs
 PARAMS_PATH = Path(__file__).parent.parent / "data" / "processed" / "model_params.json"
 
 
+FEATURES = ["mean_ndvi", "year"]
+
+
 def train(df: pd.DataFrame) -> dict:
-    X = df[["mean_ndvi"]].values
+    X = df[FEATURES].values
     y = df["yield_boxes"].values
 
     model = LinearRegression()
@@ -32,6 +36,7 @@ def train(df: pd.DataFrame) -> dict:
     params = {
         "intercept": model.intercept_,
         "coef_ndvi": model.coef_[0],
+        "coef_year": model.coef_[1],
         "r2_train": r2_score(y, model.predict(X)),
         "mae_loo": mean_absolute_error(y, preds),
         "historical_avg_yield": float(df["yield_boxes"].mean()),
@@ -39,8 +44,8 @@ def train(df: pd.DataFrame) -> dict:
     return params, model
 
 
-def predict_yield(mean_ndvi: float, params: dict) -> float:
-    return params["intercept"] + params["coef_ndvi"] * mean_ndvi
+def predict_yield(mean_ndvi: float, year: int, params: dict) -> float:
+    return params["intercept"] + params["coef_ndvi"] * mean_ndvi + params["coef_year"] * year
 
 
 def infer_price_pressure(predicted_yield: float, params: dict) -> str:

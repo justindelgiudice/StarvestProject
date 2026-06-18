@@ -21,9 +21,9 @@ def run_backtest(df: pd.DataFrame) -> pd.DataFrame:
         test = df.iloc[i]
 
         model = LinearRegression()
-        model.fit(train[["mean_ndvi"]], train["yield_boxes"])
+        model.fit(train[["mean_ndvi", "year"]], train["yield_boxes"])
 
-        predicted = model.predict([[test["mean_ndvi"]]])[0]
+        predicted = model.predict([[test["mean_ndvi"], test["year"]]])[0]
         actual = test["yield_boxes"]
         hist_avg = train["yield_boxes"].mean()
 
