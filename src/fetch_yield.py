@@ -11,13 +11,15 @@ from pathlib import Path
 NASS_API_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 OUTPUT_PATH = Path(__file__).parent.parent / "data" / "raw" / "yield_raw.csv"
 
-# Florida orange production in 1000 boxes
 NASS_PARAMS = {
     "commodity_desc": "ORANGES",
     "state_alpha": "FL",
     "statisticcat_desc": "PRODUCTION",
     "unit_desc": "BOXES",
     "freq_desc": "ANNUAL",
+    "domain_desc": "TOTAL",
+    "class_desc": "ALL CLASSES",
+    "source_desc": "SURVEY",
     "format": "JSON",
 }
 
@@ -31,10 +33,13 @@ def fetch_yield() -> pd.DataFrame:
     resp.raise_for_status()
     data = resp.json().get("data", [])
 
-    df = pd.DataFrame(data)[["year", "Value", "domain_desc"]].query("domain_desc == 'TOTAL'")[["year", "Value"]].rename(columns={"Value": "yield_boxes"})
+    df = pd.DataFrame(data)[["year", "Value", "load_time"]]
     df["year"] = df["year"].astype(int)
-    df["yield_boxes"] = pd.to_numeric(df["yield_boxes"].str.replace(",", ""), errors="coerce")
-    df = df.dropna().sort_values("year").reset_index(drop=True)
+    df["Value"] = pd.to_numeric(df["Value"].str.replace(",", ""), errors="coerce")
+    df = df.dropna()
+    # Take the final (most recently loaded) estimate per year
+    df = df.sort_values("load_time").groupby("year")["Value"].last().reset_index()
+    df = df.rename(columns={"Value": "yield_boxes"}).sort_values("year").reset_index(drop=True)
     return df
 
 

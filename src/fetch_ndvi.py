@@ -7,11 +7,7 @@ import ee
 import pandas as pd
 from pathlib import Path
 
-# Florida citrus belt — Polk, Highlands, DeSoto counties
-CITRUS_REGION = ee.Geometry.Rectangle([-82.0, 27.0, -81.0, 28.2])
-
-# MODIS MOD13A1: 500m 16-day NDVI composite
-MODIS_COLLECTION = "MODIS/006/MOD13A1"
+MODIS_COLLECTION = "MODIS/061/MOD13A1"
 NDVI_BAND = "NDVI"
 NDVI_SCALE = 0.0001  # raw values are scaled by 10000
 
@@ -19,19 +15,22 @@ OUTPUT_PATH = Path(__file__).parent.parent / "data" / "raw" / "ndvi_raw.csv"
 
 
 def fetch_ndvi(start_year: int = 2015, end_year: int = 2024) -> pd.DataFrame:
-    ee.Initialize()
+    ee.Initialize(project="starvest")
+
+    # Florida citrus belt — Polk, Highlands, DeSoto counties
+    citrus_region = ee.Geometry.Rectangle([-82.0, 27.0, -81.0, 28.2])
 
     collection = (
         ee.ImageCollection(MODIS_COLLECTION)
         .filterDate(f"{start_year}-01-01", f"{end_year}-12-31")
-        .filterBounds(CITRUS_REGION)
+        .filterBounds(citrus_region)
         .select(NDVI_BAND)
     )
 
     def image_mean(image):
         mean = image.reduceRegion(
             reducer=ee.Reducer.mean(),
-            geometry=CITRUS_REGION,
+            geometry=citrus_region,
             scale=500,
             maxPixels=1e9,
         )
