@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl http://localhost*)",
+      "Bash(curl -s http://localhost*)",
+      "Bash(curl -v http://localhost*)",
+      "Bash(curl -s https://quickstats.nass.usda.gov*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push*)",
+      "Bash(git init*)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(pip3 install *)",
+      "Bash(python3.13 -m pip install *)",
+      "Bash(python3.13 src/*)",
+      "Bash(python3.13 -c *)",
+      "Bash(python3.13 -m json.tool)",
+      "Bash(mkdir -p *)",
+      "Bash(export *)",
+      "Bash(xxd *)",
+      "Bash(open *)",
+      "Bash(/Users/justin/Library/Python/3.13/bin/streamlit *)",
+      "Bash(/Users/justin/Library/Python/3.13/bin/uvicorn *)",
+      "Bash(/Users/justin/Library/Python/3.13/bin/earthengine *)",
+      "Bash(SSL_CERT_FILE=* python3.13 *)"
+    ]
+  }
+}

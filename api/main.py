@@ -83,13 +83,13 @@ def get_forecast(year: int):
 
     return {
         "year": year,
-        "mean_ndvi": row["mean_ndvi"],
-        "predicted_yield": predicted_yield,
-        "actual_yield": row["yield_boxes"],
-        "historical_avg_yield": params["historical_avg_yield"],
-        "yield_vs_avg": ratio,
+        "mean_ndvi": float(row["mean_ndvi"]),
+        "predicted_yield": float(predicted_yield),
+        "actual_yield": float(row["yield_boxes"]),
+        "historical_avg_yield": float(params["historical_avg_yield"]),
+        "yield_vs_avg": float(ratio),
         "price_pressure": pressure,
-        "avg_oj_price": row["avg_oj_price"],
+        "avg_oj_price": float(row["avg_oj_price"]),
     }
 
 
@@ -104,12 +104,12 @@ def get_summary():
 
     return {
         "latest_year": int(latest["year"]),
-        "latest_ndvi": latest["mean_ndvi"],
-        "latest_yield": latest["yield_boxes"],
-        "latest_price_pressure": latest["price_pressure"],
-        "latest_oj_price": latest["avg_oj_price"],
-        "historical_avg_yield": params["historical_avg_yield"],
-        "model_r2": params["r2_train"],
-        "model_mae": params["mae_loo"],
-        "backtest_accuracy": accuracy,
+        "latest_ndvi": float(latest["mean_ndvi"]),
+        "latest_yield": float(latest["yield_boxes"]),
+        "latest_price_pressure": str(latest["price_pressure"]),
+        "latest_oj_price": float(latest["avg_oj_price"]),
+        "historical_avg_yield": float(params["historical_avg_yield"]),
+        "model_r2": float(params["r2_train"]),
+        "model_mae": float(params["mae_loo"]),
+        "backtest_accuracy": float(accuracy),
     }
