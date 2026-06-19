@@ -47,7 +47,7 @@ except FileNotFoundError:
     st.stop()
 
 # ── Header ───────────────────────────────────────────────────────────────────
-st.image(str(LOGO), width=380)
+st.image(str(LOGO), width=500)
 st.caption("NASA MODIS NDVI · USDA Yield Data · OJ Futures")
 
 st.divider()
