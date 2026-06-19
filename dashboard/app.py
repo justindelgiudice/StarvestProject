@@ -6,9 +6,10 @@ import plotly.graph_objects as go
 from pathlib import Path
 
 DATA = Path(__file__).parent.parent / "data" / "processed"
+LOGO = Path(__file__).parent.parent / "assets" / "StarvestLogo.png"
 
 st.set_page_config(page_title="Starvest", page_icon="🍊", layout="wide")
-st.title("🍊 Starvest — Florida Citrus & OJ Price Intelligence")
+st.image(str(LOGO), width=400)
 st.caption("NASA MODIS NDVI · USDA Yield Data · OJ Futures")
 
 
