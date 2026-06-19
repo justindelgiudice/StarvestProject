@@ -20,31 +20,32 @@ st.set_page_config(
 st.markdown("""
 <style>
   /* ── Base ── */
-  [data-testid="stAppViewContainer"] { background: #070b18; }
-  [data-testid="stHeader"]           { background: #070b18; }
-  [data-testid="stSidebar"]          { background: #0d1226; }
+  [data-testid="stAppViewContainer"] { background: #f8fafc; }
+  [data-testid="stHeader"]           { background: #f8fafc; }
+  [data-testid="stSidebar"]          { background: #f1f5f9; }
   .block-container { padding: 1.5rem 2.5rem 2rem; max-width: 1400px; }
 
   /* ── KPI cards ── */
   .kpi-card {
-    background: linear-gradient(145deg, #111827, #1a2235);
-    border: 1px solid #1e3a5f;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 1.1rem 1.3rem;
     height: 100%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
-  .kpi-label { color: #6b8cba; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .3rem; }
-  .kpi-value { color: #ffffff; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
-  .kpi-sub   { color: #6b8cba; font-size: 0.75rem; margin-top: .3rem; }
-  .kpi-bullish { color: #22c55e; font-size: 1.4rem; font-weight: 700; }
-  .kpi-bearish { color: #ef4444; font-size: 1.4rem; font-weight: 700; }
-  .kpi-neutral { color: #f59e0b; font-size: 1.4rem; font-weight: 700; }
-  .kpi-trend-pos { color: #22c55e; font-size: 1.4rem; font-weight: 700; }
-  .kpi-trend-neg { color: #ef4444; font-size: 1.4rem; font-weight: 700; }
+  .kpi-label { color: #64748b; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .3rem; }
+  .kpi-value { color: #0f172a; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+  .kpi-sub   { color: #94a3b8; font-size: 0.75rem; margin-top: .3rem; }
+  .kpi-bullish { color: #16a34a; font-size: 1.4rem; font-weight: 700; }
+  .kpi-bearish { color: #dc2626; font-size: 1.4rem; font-weight: 700; }
+  .kpi-neutral { color: #d97706; font-size: 1.4rem; font-weight: 700; }
+  .kpi-trend-pos { color: #16a34a; font-size: 1.4rem; font-weight: 700; }
+  .kpi-trend-neg { color: #dc2626; font-size: 1.4rem; font-weight: 700; }
 
   /* ── Section headers ── */
   .section-title {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 0.78rem;
     text-transform: uppercase;
     letter-spacing: .1em;
@@ -54,10 +55,11 @@ st.markdown("""
 
   /* ── Panel cards ── */
   .panel-card {
-    background: linear-gradient(145deg, #111827, #1a2235);
-    border: 1px solid #1e3a5f;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 1.3rem 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
   .panel-title {
     color: #f97316;
@@ -69,29 +71,29 @@ st.markdown("""
   }
 
   /* ── Outlook panel ── */
-  .outlook-metric { display: flex; justify-content: space-between; align-items: center; padding: .5rem 0; border-bottom: 1px solid #1e3a5f; }
-  .outlook-key    { color: #94a3b8; font-size: .82rem; }
-  .outlook-val    { color: #ffffff; font-size: .9rem; font-weight: 600; }
+  .outlook-metric { display: flex; justify-content: space-between; align-items: center; padding: .5rem 0; border-bottom: 1px solid #e2e8f0; }
+  .outlook-key    { color: #64748b; font-size: .82rem; }
+  .outlook-val    { color: #0f172a; font-size: .9rem; font-weight: 600; }
 
   /* ── Model perf table ── */
-  .perf-row { display: flex; justify-content: space-between; align-items: center; padding: .45rem 0; border-bottom: 1px solid #1e2d45; }
-  .perf-key { color: #94a3b8; font-size: .8rem; }
-  .perf-val { color: #38bdf8; font-size: .85rem; font-weight: 600; }
+  .perf-row { display: flex; justify-content: space-between; align-items: center; padding: .45rem 0; border-bottom: 1px solid #e2e8f0; }
+  .perf-key { color: #64748b; font-size: .8rem; }
+  .perf-val { color: #2563eb; font-size: .85rem; font-weight: 600; }
 
   /* ── Data sources ── */
-  .ds-item { color: #94a3b8; font-size: .8rem; padding: .4rem 0; border-bottom: 1px solid #1e2d45; display: flex; align-items: center; gap: .5rem; }
+  .ds-item { color: #64748b; font-size: .8rem; padding: .4rem 0; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; gap: .5rem; }
   .ds-dot   { width: 7px; height: 7px; border-radius: 50%; background: #f97316; flex-shrink: 0; }
 
   /* ── Divider ── */
-  hr { border-color: #1e3a5f !important; margin: 1.2rem 0 !important; }
+  hr { border-color: #e2e8f0 !important; margin: 1.2rem 0 !important; }
 
   /* ── Tooltip ── */
   .tooltip-wrap { position: relative; display: inline-block; cursor: help; }
   .tooltip-wrap .tooltip-text {
     visibility: hidden; opacity: 0;
-    background: #1e3a5f; color: #e2e8f0;
+    background: #1e293b; color: #f1f5f9;
     font-size: .72rem; line-height: 1.4;
-    border: 1px solid #2d5a8a; border-radius: 8px;
+    border: 1px solid #334155; border-radius: 8px;
     padding: .6rem .8rem; width: 220px;
     position: absolute; z-index: 999;
     bottom: 130%; left: 50%; transform: translateX(-50%);
@@ -139,9 +141,9 @@ now            = datetime.now()
 harvest_month  = "Nov" if now.month <= 10 else "Nov"
 harvest_year   = now.year if now.month <= 6 else now.year + 1
 
-CHART_BG    = "rgba(0,0,0,0)"
-GRID_COLOR  = "#1e3a5f"
-FONT_COLOR  = "#94a3b8"
+CHART_BG    = "#ffffff"
+GRID_COLOR  = "#e2e8f0"
+FONT_COLOR  = "#475569"
 
 def chart_layout(fig, height=300):
     fig.update_layout(
@@ -150,12 +152,12 @@ def chart_layout(fig, height=300):
         plot_bgcolor=CHART_BG,
         font=dict(color=FONT_COLOR, size=11),
         margin=dict(t=10, b=30, l=10, r=10),
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10, color=FONT_COLOR)),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#1e3a5f", bordercolor="#2d5a8a", font=dict(color="#e2e8f0", size=11)),
+        hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155", font=dict(color="#f1f5f9", size=11)),
         xaxis=dict(
             gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR),
-            showspikes=True, spikecolor="#38bdf8", spikethickness=1, spikedash="dot", spikemode="across",
+            showspikes=True, spikecolor="#2563eb", spikethickness=1, spikedash="dot", spikemode="across",
         ),
         yaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR)),
     )
@@ -165,8 +167,8 @@ def chart_layout(fig, height=300):
 h_col1, h_col2 = st.columns([3, 1])
 with h_col1:
     st.image(str(LOGO), width=460)
-    st.markdown('<p style="color:#6b8cba;font-size:.82rem;margin-top:-.5rem;">Satellite-Powered Citrus Commodity Forecasting</p>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#374151;font-size:.75rem;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#64748b;font-size:.82rem;margin-top:-.5rem;">Satellite-Powered Citrus Commodity Forecasting</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#94a3b8;font-size:.75rem;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>', unsafe_allow_html=True)
 
 st.markdown("<hr/>", unsafe_allow_html=True)
 
@@ -248,13 +250,23 @@ with c_map:
         lat=[27.6], lon=[-81.5], mode="markers+text",
         marker=dict(size=14, color="#f97316"),
         text=[f"NDVI {ndvi_val:.3f}"], textposition="top right",
-        textfont=dict(color="#ffffff", size=11),
+        textfont=dict(color="#ffffff", size=12),
         hovertemplate=f"Citrus Belt<br>NDVI: {ndvi_val:.4f}<extra></extra>",
     ))
     fig_map.update_layout(
-        mapbox=dict(style="carto-darkmatter", center=dict(lat=27.8, lon=-81.5), zoom=5.5),
+        mapbox=dict(
+            style="white-bg",
+            center=dict(lat=27.8, lon=-81.5),
+            zoom=5.5,
+            layers=[{
+                "below": "traces",
+                "sourcetype": "raster",
+                "sourceattribution": "ESRI World Imagery",
+                "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+            }],
+        ),
         height=300, margin=dict(t=0, b=0, l=0, r=0),
-        paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
+        paper_bgcolor="#ffffff", showlegend=False,
     )
     st.plotly_chart(fig_map, use_container_width=True)
 
@@ -281,8 +293,8 @@ with c_yield:
     fig_yield = go.Figure()
     fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Yield",
                       hovertemplate="<b>%{x}</b><br>Yield: %{y:,.0f} boxes<extra></extra>")
-    fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash", line_color="#6b8cba",
-                        annotation_text="Hist. Avg", annotation_font_color="#6b8cba")
+    fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash", line_color="#94a3b8",
+                        annotation_text="Hist. Avg", annotation_font_color="#64748b")
     chart_layout(fig_yield)
     fig_yield.update_layout(yaxis_title="Boxes", xaxis_title="")
     st.plotly_chart(fig_yield, use_container_width=True)
