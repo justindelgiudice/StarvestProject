@@ -1,8 +1,9 @@
 import json
+import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import datetime
 
@@ -26,16 +27,20 @@ st.markdown("""
   [data-testid="stSidebar"]          { background: #f1f5f9; }
   .block-container { padding: 1.5rem 2.5rem 2rem; max-width: 1400px; }
 
+  /* ── Section spacing ── */
+  .section-gap { margin-top: 1.8rem; }
+
   /* ── KPI cards ── */
   .kpi-card {
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
-    padding: 1.1rem 1.3rem;
+    padding: 1.2rem 1.4rem;
     height: 100%;
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    box-sizing: border-box;
   }
-  .kpi-label { color: #64748b; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .3rem; }
+  .kpi-label { color: #64748b; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .4rem; }
   .kpi-value { color: #0f172a; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
   .kpi-sub   { color: #94a3b8; font-size: 0.75rem; margin-top: .3rem; }
   .kpi-bullish { color: #16a34a; font-size: 1.4rem; font-weight: 700; }
@@ -145,6 +150,10 @@ harvest_year   = now.year if now.month <= 6 else now.year + 1
 CHART_BG    = "#ffffff"
 GRID_COLOR  = "#e2e8f0"
 FONT_COLOR  = "#475569"
+CHART_CFG   = {"displayModeBar": "hover", "displaylogo": False}
+
+def gap():
+    st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
 
 def chart_layout(fig, height=300):
     fig.update_layout(
@@ -225,7 +234,7 @@ k6.markdown(f"""<div class="kpi-card">
   <div class="kpi-sub">Season start</div>
 </div>""", unsafe_allow_html=True)
 
-st.markdown("<div style='margin-top:1.2rem'></div>", unsafe_allow_html=True)
+gap()
 
 # ── ROW 1: Map + NDVI Trend ───────────────────────────────────────────────────
 c_map, c_ndvi = st.columns(2, gap="medium")
@@ -269,7 +278,7 @@ with c_map:
         height=420, margin=dict(t=0, b=0, l=0, r=0),
         paper_bgcolor="#ffffff", showlegend=False,
     )
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, use_container_width=True, config=CHART_CFG)
 
 with c_ndvi:
     st.markdown('<p class="section-title">NDVI Trend — Florida Citrus Belt</p>', unsafe_allow_html=True)
@@ -283,8 +292,9 @@ with c_ndvi:
     ))
     chart_layout(fig_ndvi, height=420)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
-    st.plotly_chart(fig_ndvi, use_container_width=True)
+    st.plotly_chart(fig_ndvi, use_container_width=True, config=CHART_CFG)
 
+gap()
 # ── ROW 2: Yield + Backtest ───────────────────────────────────────────────────
 c_yield, c_bt = st.columns(2, gap="medium")
 
@@ -298,7 +308,7 @@ with c_yield:
                         annotation_text="Hist. Avg", annotation_font_color="#64748b")
     chart_layout(fig_yield)
     fig_yield.update_layout(yaxis_title="Boxes", xaxis_title="")
-    st.plotly_chart(fig_yield, use_container_width=True)
+    st.plotly_chart(fig_yield, use_container_width=True, config=CHART_CFG)
 
 with c_bt:
     st.markdown('<p class="section-title">Backtest — Predicted vs Actual Yield</p>', unsafe_allow_html=True)
@@ -313,9 +323,105 @@ with c_bt:
                        hovertemplate="<b>%{x}</b><br>Predicted: %{y:,.0f} boxes<extra></extra>")
     chart_layout(fig_bt)
     fig_bt.update_layout(yaxis_title="Boxes", xaxis_title="")
-    st.plotly_chart(fig_bt, use_container_width=True)
+    st.plotly_chart(fig_bt, use_container_width=True, config=CHART_CFG)
 
-st.markdown("<hr/>", unsafe_allow_html=True)
+gap()
+
+# ── YIELD vs OJ PRICE IMPACT ─────────────────────────────────────────────────
+st.markdown('<p class="section-title">Yield vs. OJ Price Impact</p>', unsafe_allow_html=True)
+
+c_ts, c_sc = st.columns(2, gap="medium")
+
+with c_ts:
+    st.markdown('<p class="section-title">Yield & OJ Price — Annual</p>', unsafe_allow_html=True)
+    fig_ts = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_ts.add_trace(go.Bar(
+        x=dataset["year"], y=dataset["yield_boxes"],
+        name="Yield (boxes)",
+        marker_color="#f97316",
+        opacity=0.7,
+        hovertemplate="<b>%{x}</b><br>Yield: %{y:,.0f} boxes<extra></extra>",
+    ), secondary_y=False)
+    fig_ts.add_trace(go.Scatter(
+        x=dataset["year"], y=dataset["avg_oj_price"],
+        name="OJ Price (¢/lb)",
+        line=dict(color="#2563eb", width=2.5),
+        mode="lines+markers",
+        marker=dict(size=7),
+        hovertemplate="<b>%{x}</b><br>OJ Price: ¢%{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+    chart_layout(fig_ts)
+    fig_ts.update_layout(
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=10, b=30, l=10, r=50),
+    )
+    fig_ts.update_yaxes(
+        title_text="Yield (boxes)", secondary_y=False,
+        gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR),
+    )
+    fig_ts.update_yaxes(
+        title_text="OJ Price (¢/lb)", secondary_y=True,
+        gridcolor="rgba(0,0,0,0)", linecolor=GRID_COLOR, tickfont=dict(color="#2563eb"),
+        title_font=dict(color="#2563eb"),
+    )
+    st.plotly_chart(fig_ts, use_container_width=True, config=CHART_CFG)
+
+with c_sc:
+    st.markdown('<p class="section-title">Yield vs. OJ Price — Scatter</p>', unsafe_allow_html=True)
+    x_sc    = dataset["yield_vs_avg"].values
+    y_sc    = dataset["avg_oj_price"].values
+    years_sc = dataset["year"].values.astype(int)
+
+    m, b_int = np.polyfit(x_sc, y_sc, 1)
+    x_line   = np.linspace(x_sc.min(), x_sc.max(), 50)
+    y_line   = m * x_line + b_int
+
+    fig_sc = go.Figure()
+    fig_sc.add_trace(go.Scatter(
+        x=x_sc, y=y_sc,
+        mode="markers+text",
+        text=[str(y) for y in years_sc],
+        textposition="top center",
+        textfont=dict(size=9, color="#64748b"),
+        marker=dict(
+            size=11,
+            color=years_sc,
+            colorscale="Oranges",
+            showscale=False,
+            line=dict(color="#0f172a", width=0.8),
+        ),
+        hovertemplate="<b>%{text}</b><br>Yield vs Avg: %{x:.2f}×<br>OJ Price: ¢%{y:.1f}<extra></extra>",
+        name="",
+    ))
+    fig_sc.add_trace(go.Scatter(
+        x=x_line, y=y_line,
+        mode="lines",
+        line=dict(color="#ef4444", width=1.5, dash="dash"),
+        name="Trend",
+        hoverinfo="skip",
+    ))
+    chart_layout(fig_sc)
+    fig_sc.update_layout(
+        xaxis_title="Yield vs. Historical Avg (ratio)",
+        yaxis_title="OJ Price (¢/lb)",
+        showlegend=False,
+    )
+    st.plotly_chart(fig_sc, use_container_width=True, config=CHART_CFG)
+
+# Correlation summary bar
+corr    = float(np.corrcoef(dataset["yield_vs_avg"], dataset["avg_oj_price"])[0, 1])
+corr_lbl = "lower yield → higher OJ prices (inverse relationship)" if corr < 0 else "higher yield → higher OJ prices (direct relationship)"
+corr_color = "#2563eb" if corr < 0 else "#16a34a"
+st.markdown(f"""
+<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;
+            padding:.85rem 1.2rem;margin-top:.5rem;display:flex;align-items:center;gap:.8rem;">
+  <span style="color:#64748b;font-size:.8rem;">Correlation (yield ratio vs. OJ price):</span>
+  <span style="color:{corr_color};font-size:1rem;font-weight:700;">r = {corr:+.3f}</span>
+  <span style="color:#94a3b8;font-size:.78rem;">— {corr_lbl}. Strength: {abs(corr):.0%}.</span>
+</div>
+""", unsafe_allow_html=True)
+
+gap()
 
 # ── BOTTOM ROW: Outlook | Model Perf | Data Sources ───────────────────────────
 b1, b2, b3 = st.columns(3, gap="medium")
@@ -355,7 +461,7 @@ with b3:
             st.markdown(f'<p style="color:#0f172a;font-size:.85rem;font-weight:600;margin:0;padding-top:.6rem;">{label}</p>', unsafe_allow_html=True)
         st.markdown('<hr style="margin:.3rem 0!important;border-color:#e2e8f0!important;"/>', unsafe_allow_html=True)
 
-st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+gap()
 
 with st.expander("📖 View Detailed Data & Methodology"):
     st.markdown("""
