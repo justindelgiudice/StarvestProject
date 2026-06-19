@@ -15,10 +15,11 @@ st.markdown("""
 <style>
     .block-container { padding: 2rem 3rem 2rem 3rem; max-width: 1200px; }
     [data-testid="stMetric"] { background: #1e1e2e; border-radius: 10px; padding: 1rem 1.2rem; }
-    [data-testid="stMetricLabel"] { font-size: 0.8rem; }
-    h2, h3 { margin-top: 1.8rem !important; margin-bottom: 0.4rem !important; }
+    [data-testid="stMetricLabel"] p { font-size: 0.8rem; }
+    div[data-testid="stHeading"] { margin-top: 1.8rem; margin-bottom: 0.4rem; }
     hr { margin: 1.8rem 0 !important; }
-    .stCaption { margin-bottom: 1.5rem; }
+    div[data-testid="stCaptionContainer"] { margin-bottom: 1.5rem; }
+    .stButton > button { background-color: transparent !important; }
 </style>
 """, unsafe_allow_html=True)
 
