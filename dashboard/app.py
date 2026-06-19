@@ -8,7 +8,8 @@ from datetime import datetime
 
 DATA  = Path(__file__).parent.parent / "data" / "processed"
 RAW   = Path(__file__).parent.parent / "data" / "raw"
-LOGO  = Path(__file__).parent.parent / "assets" / "StarvestLogo.png"
+LOGO  = Path(__file__).parent.parent / "Assets" / "StarvestLogo.png"
+DS    = Path(__file__).parent.parent / "Data Source"
 
 st.set_page_config(
     page_title="Starvest",
@@ -265,7 +266,7 @@ with c_map:
                 "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
             }],
         ),
-        height=300, margin=dict(t=0, b=0, l=0, r=0),
+        height=420, margin=dict(t=0, b=0, l=0, r=0),
         paper_bgcolor="#ffffff", showlegend=False,
     )
     st.plotly_chart(fig_map, use_container_width=True)
@@ -280,7 +281,7 @@ with c_ndvi:
         fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
         hovertemplate="<b>%{x|%b %Y}</b><br>NDVI: %{y:.4f}<extra></extra>",
     ))
-    chart_layout(fig_ndvi)
+    chart_layout(fig_ndvi, height=420)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
     st.plotly_chart(fig_ndvi, use_container_width=True)
 
@@ -339,13 +340,20 @@ with b2:
 </div>""", unsafe_allow_html=True)
 
 with b3:
-    st.markdown(f"""<div class="panel-card">
-  <div class="panel-title">🛰️ Data Sources</div>
-  <div class="ds-item"><div class="ds-dot"></div>NASA MODIS NDVI</div>
-  <div class="ds-item"><div class="ds-dot"></div>USDA NASS Data</div>
-  <div class="ds-item"><div class="ds-dot"></div>CME OJ Futures</div>
-  <div class="ds-item" style="border:none"><div class="ds-dot"></div>Google Earth Engine</div>
-</div>""", unsafe_allow_html=True)
+    st.markdown('<div class="panel-card"><div class="panel-title">🛰️ Data Sources</div></div>', unsafe_allow_html=True)
+    ds_entries = [
+        (DS / "NASA-Logo-Large.png",       "NASA MODIS NDVI"),
+        (DS / "usda-1-logo.png",           "USDA NASS Data"),
+        (DS / "CME_Group_Logo.svg.png",    "CME OJ Futures"),
+        (DS / "earth_engine_icon.png",     "Google Earth Engine"),
+    ]
+    for logo_path, label in ds_entries:
+        col_img, col_lbl = st.columns([1, 3], gap="small")
+        with col_img:
+            st.image(str(logo_path), width=52)
+        with col_lbl:
+            st.markdown(f'<p style="color:#0f172a;font-size:.85rem;font-weight:600;margin:0;padding-top:.6rem;">{label}</p>', unsafe_allow_html=True)
+        st.markdown('<hr style="margin:.3rem 0!important;border-color:#e2e8f0!important;"/>', unsafe_allow_html=True)
 
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
