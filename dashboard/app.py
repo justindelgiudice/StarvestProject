@@ -85,6 +85,21 @@ st.markdown("""
   /* ── Divider ── */
   hr { border-color: #1e3a5f !important; margin: 1.2rem 0 !important; }
 
+  /* ── Tooltip ── */
+  .tooltip-wrap { position: relative; display: inline-block; cursor: help; }
+  .tooltip-wrap .tooltip-text {
+    visibility: hidden; opacity: 0;
+    background: #1e3a5f; color: #e2e8f0;
+    font-size: .72rem; line-height: 1.4;
+    border: 1px solid #2d5a8a; border-radius: 8px;
+    padding: .6rem .8rem; width: 220px;
+    position: absolute; z-index: 999;
+    bottom: 130%; left: 50%; transform: translateX(-50%);
+    transition: opacity .15s ease;
+    pointer-events: none;
+  }
+  .tooltip-wrap:hover .tooltip-text { visibility: visible; opacity: 1; }
+
   /* ── Hide streamlit chrome ── */
   #MainMenu { visibility: hidden; }
   footer     { visibility: hidden; }
@@ -136,7 +151,12 @@ def chart_layout(fig, height=300):
         font=dict(color=FONT_COLOR, size=11),
         margin=dict(t=10, b=30, l=10, r=10),
         legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-        xaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR)),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e3a5f", bordercolor="#2d5a8a", font=dict(color="#e2e8f0", size=11)),
+        xaxis=dict(
+            gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR),
+            showspikes=True, spikecolor="#38bdf8", spikethickness=1, spikedash="dot", spikemode="across",
+        ),
         yaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR)),
     )
     return fig
@@ -169,8 +189,17 @@ k2.markdown(f"""<div class="kpi-card">
   <div class="kpi-sub">Boxes · {int(latest['year'])}</div>
 </div>""", unsafe_allow_html=True)
 
+PRESSURE_TOOLTIPS = {
+    "bullish": "Bullish = upward price pressure expected due to lower-than-average citrus supply. OJ futures likely to rise.",
+    "bearish": "Bearish = downward price pressure expected due to higher-than-average citrus supply. OJ futures likely to fall.",
+    "neutral": "Neutral = yield near historical average. No significant price pressure signal detected.",
+}
 k3.markdown(f"""<div class="kpi-card">
-  <div class="kpi-label">Market Pressure</div>
+  <div class="kpi-label">Market Pressure
+    <span class="tooltip-wrap"> ℹ️
+      <span class="tooltip-text">{PRESSURE_TOOLTIPS[pressure]}</span>
+    </span>
+  </div>
   <div class="{pressure_class}">{pressure.capitalize()}</div>
   <div class="kpi-sub">OJ futures signal</div>
 </div>""", unsafe_allow_html=True)
@@ -237,6 +266,7 @@ with c_ndvi:
         mode="lines", name="NDVI",
         line=dict(color="#22c55e", width=1.5),
         fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
+        hovertemplate="<b>%{x|%b %Y}</b><br>NDVI: %{y:.4f}<extra></extra>",
     ))
     chart_layout(fig_ndvi)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
@@ -249,7 +279,8 @@ with c_yield:
     st.markdown('<p class="section-title">Yield vs Historical Average</p>', unsafe_allow_html=True)
     colors = ["#f97316" if y < params["historical_avg_yield"] else "#38bdf8" for y in dataset["yield_boxes"]]
     fig_yield = go.Figure()
-    fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Yield")
+    fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Yield",
+                      hovertemplate="<b>%{x}</b><br>Yield: %{y:,.0f} boxes<extra></extra>")
     fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash", line_color="#6b8cba",
                         annotation_text="Hist. Avg", annotation_font_color="#6b8cba")
     chart_layout(fig_yield)
@@ -261,12 +292,12 @@ with c_bt:
     fig_bt = go.Figure()
     fig_bt.add_scatter(x=backtest["year"], y=backtest["actual_yield"],
                        mode="lines+markers", name="Actual",
-                       line=dict(color="#f97316", width=2),
-                       marker=dict(size=6))
+                       line=dict(color="#f97316", width=2), marker=dict(size=6),
+                       hovertemplate="<b>%{x}</b><br>Actual: %{y:,.0f} boxes<extra></extra>")
     fig_bt.add_scatter(x=backtest["year"], y=backtest["predicted_yield"],
                        mode="lines+markers", name="Predicted",
-                       line=dict(color="#38bdf8", width=2, dash="dash"),
-                       marker=dict(size=6))
+                       line=dict(color="#38bdf8", width=2, dash="dash"), marker=dict(size=6),
+                       hovertemplate="<b>%{x}</b><br>Predicted: %{y:,.0f} boxes<extra></extra>")
     chart_layout(fig_bt)
     fig_bt.update_layout(yaxis_title="Boxes", xaxis_title="")
     st.plotly_chart(fig_bt, use_container_width=True)
@@ -281,9 +312,9 @@ with b1:
   <div class="panel-title">🍊 {harvest_year} Outlook</div>
   <div class="outlook-metric"><span class="outlook-key">Predicted Yield</span><span class="outlook-val">{latest['yield_boxes']/1e6:.2f}M boxes</span></div>
   <div class="outlook-metric"><span class="outlook-key">Market Signal</span><span class="outlook-val" style="color:{'#22c55e' if pressure=='bullish' else '#ef4444' if pressure=='bearish' else '#f59e0b'}">{pressure.capitalize()}</span></div>
-  <div class="outlook-metric"><span class="outlook-key">Confidence Level</span><span class="outlook-val">{accuracy:.0%}</span></div>
+  <div class="outlook-metric"><span class="outlook-key">Backtest Accuracy</span><span class="outlook-val">{accuracy:.0%}</span></div>
   <div class="outlook-metric" style="border:none"><span class="outlook-key">Trend</span><span class="outlook-val" style="color:{'#22c55e' if ndvi_trend_pct>=0 else '#ef4444'}">{trend_arrow} {abs(ndvi_trend_pct):.1f}%</span></div>
-  <p style="color:#374151;font-size:.7rem;margin-top:1rem;">Forecasts satellite conditions and consistent NDVI trends. Higher yields than historical average indicates lower price pressure.</p>
+  <p style="color:#475569;font-size:.7rem;margin-top:1rem;line-height:1.5;">Accuracy is limited because NDVI alone doesn't fully capture citrus greening disease (HLB) impact on yield. Year trend is included as a second feature to partially account for this.</p>
 </div>""", unsafe_allow_html=True)
 
 with b2:
@@ -305,4 +336,36 @@ with b3:
 </div>""", unsafe_allow_html=True)
 
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-st.markdown(f'<p style="color:#374151;font-size:.72rem;text-align:center;">⚠️ View Detailed Data & Methodology</p>', unsafe_allow_html=True)
+
+with st.expander("📖 View Detailed Data & Methodology"):
+    st.markdown("""
+**Data Sources**
+
+| Source | Description | Update Frequency |
+|--------|-------------|-----------------|
+| NASA MODIS MOD13A1 | 500m 16-day NDVI composite via Google Earth Engine | 16-day |
+| USDA NASS Quick Stats | Florida orange production (ALL CLASSES, SURVEY) | Annual |
+| CME OJ Futures (OJ=F) | Orange juice front-month futures price via yfinance | Daily |
+
+---
+
+**Model Methodology**
+
+Starvest uses a linear regression model with two features:
+- **Mean NDVI** — average Normalized Difference Vegetation Index over the Florida citrus belt (Polk, Highlands, DeSoto counties) during the Oct–May growing season. Higher NDVI indicates healthier vegetation.
+- **Year** — captures the long-run decline in Florida citrus production driven by Huanglongbing (HLB / citrus greening disease), which NDVI alone cannot distinguish from weather effects.
+
+**Price Pressure Logic**
+- **Bullish** — predicted yield is >10% below historical average → supply shock → upward price pressure on OJ futures.
+- **Bearish** — predicted yield is >10% above historical average → oversupply → downward price pressure.
+- **Neutral** — predicted yield within ±10% of historical average.
+
+**Backtest**
+Walk-forward validation: for each year, the model is trained only on prior years and never sees future data. This gives an honest estimate of out-of-sample accuracy.
+
+**Limitations**
+- Small dataset (9 years of annual observations). Accuracy will improve as more data accumulates.
+- NDVI doesn't directly measure HLB infection severity — the year trend is a proxy, not a mechanistic variable.
+- OJ futures are influenced by factors beyond Florida supply (Brazil production, weather, macroeconomics).
+""")
+
