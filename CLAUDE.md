@@ -11,9 +11,10 @@ src/fetch_ndvi.py      — Pull MODIS NDVI from Google Earth Engine for the Flor
 src/fetch_yield.py     — Pull annual Florida orange production from USDA NASS API
 src/fetch_prices.py    — Pull OJ futures (OJ=F) history from yfinance
 src/build_dataset.py   — Merge all sources; compute growing-season NDVI, yield vs avg, price pressure label
-src/model.py           — Linear regression: season NDVI → yield; saves coefficients to data/processed/model_params.json
+src/model.py           — Linear regression: NDVI + year → yield; saves coefficients to data/processed/model_params.json
 src/backtest.py        — Walk-forward backtest; outputs data/processed/backtest_results.csv
-dashboard/app.py       — Streamlit dashboard: NDVI trend, yield vs avg, price pressure KPI, backtest panel
+api/main.py            — FastAPI backend serving processed data to the React frontend
+dashboard/app.py       — Streamlit dashboard (legacy; React frontend via Lovable is the primary UI)
 ```
 
 ## Data Pipeline
@@ -27,8 +28,27 @@ python src/fetch_prices.py
 python src/build_dataset.py
 python src/model.py
 python src/backtest.py
-streamlit run dashboard/app.py
 ```
+
+## Running the API
+
+```bash
+pip install -r requirements.txt
+uvicorn api.main:app --reload
+```
+
+API runs at http://localhost:8000. Endpoints:
+- `GET /api/summary` — latest year KPIs + model stats
+- `GET /api/ndvi` — full NDVI time series
+- `GET /api/dataset` — yearly dataset (yield, NDVI, price pressure)
+- `GET /api/backtest` — walk-forward backtest results
+- `GET /api/model-params` — model coefficients
+- `GET /api/forecast/{year}` — forecast for a specific year
+
+## React Frontend (Lovable)
+
+Connect the GitHub repo to Lovable. The frontend calls the FastAPI backend at
+`http://localhost:8000` (update to deployed URL in production).
 
 ## Environment Variables
 
