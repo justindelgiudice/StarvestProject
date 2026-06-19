@@ -157,6 +157,13 @@ def _img_b64(path: Path) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
+@st.cache_data
+def load_county_seasonal():
+    path = DATA / "ndvi_county_seasonal.csv"
+    if path.exists():
+        return pd.read_csv(path)
+    return None
+
 try:
     dataset, backtest, params = load_data()
     ndvi_raw = load_ndvi_raw()
@@ -298,56 +305,110 @@ c_map, c_ndvi = st.columns(2, gap="medium")
 
 with c_map:
     st.markdown('<p class="section-title">Florida Citrus Belt</p>', unsafe_allow_html=True)
-    ndvi_val = float(latest["mean_ndvi"])
 
-    CITRUS_FIPS = {"12105", "12049", "12027", "12055"}  # Polk, Hardee, DeSoto, Highlands
-    fl_counties = load_florida_counties()
+    ALL_CITRUS_FIPS = {"12105","12055","12027","12049","12051","12015","12043","12081"}
+    fl_counties      = load_florida_counties()
+    county_seasonal  = load_county_seasonal()
 
+    # Default NDVI value (regional average from latest dataset row)
+    ndvi_val  = float(latest["mean_ndvi"])
+    year_data = None
+    sel_year  = None
+
+    # ── Year slider (only shown when per-county data is available) ────────────
+    if county_seasonal is not None:
+        available_years = sorted(county_seasonal["year"].unique().tolist())
+        if "ndvi_map_year" not in st.session_state:
+            st.session_state["ndvi_map_year"] = int(max(available_years))
+
+        _sc1, _sc2 = st.columns([5, 1], gap="small")
+        with _sc2:
+            if st.button("Latest", use_container_width=True, key="btn_ndvi_latest"):
+                st.session_state["ndvi_map_year"] = int(max(available_years))
+                st.rerun()
+        with _sc1:
+            sel_year = st.select_slider(
+                "Year",
+                options=available_years,
+                value=st.session_state.get("ndvi_map_year", max(available_years)),
+                key="ndvi_map_year",
+            )
+
+        year_data = county_seasonal[county_seasonal["year"] == sel_year].copy()
+        if not year_data.empty:
+            ndvi_val = float(year_data["mean_ndvi"].mean())
+
+    # ── Build map figure ──────────────────────────────────────────────────────
     fig_map = go.Figure()
 
-    # County boundary overlays (added first so citrus belt fill renders on top)
+    # Non-citrus FL county borders (thin white lines)
     if fl_counties:
-        other = {"type": "FeatureCollection",
-                 "features": [f for f in fl_counties["features"] if f["id"] not in CITRUS_FIPS]}
-        citrus_cnty = {"type": "FeatureCollection",
-                       "features": [f for f in fl_counties["features"] if f["id"] in CITRUS_FIPS]}
-        all_lats, all_lons = _geojson_latlons(other)
-        c_lats, c_lons     = _geojson_latlons(citrus_cnty)
+        non_citrus_geo = {"type": "FeatureCollection",
+                          "features": [f for f in fl_counties["features"]
+                                       if f["id"] not in ALL_CITRUS_FIPS]}
+        nc_lats, nc_lons = _geojson_latlons(non_citrus_geo)
         fig_map.add_trace(go.Scattermapbox(
-            lat=all_lats, lon=all_lons, mode="lines",
+            lat=nc_lats, lon=nc_lons, mode="lines",
             line=dict(color="rgba(255,255,255,0.35)", width=0.8),
             hoverinfo="skip", showlegend=False,
         ))
+
+    # Per-county NDVI choropleth
+    if fl_counties and year_data is not None and not year_data.empty:
+        citrus_features = [f for f in fl_counties["features"] if f["id"] in ALL_CITRUS_FIPS]
+        citrus_geo      = {"type": "FeatureCollection", "features": citrus_features}
+        fig_map.add_trace(go.Choroplethmapbox(
+            geojson=citrus_geo,
+            locations=year_data["geoid"].astype(str).tolist(),
+            z=year_data["mean_ndvi"].tolist(),
+            text=year_data["county"].tolist(),
+            featureidkey="id",
+            colorscale=[[0,"#ef4444"],[0.3,"#f97316"],[0.5,"#eab308"],[1.0,"#22c55e"]],
+            zmin=0.0, zmax=1.0,
+            showscale=False,
+            marker_opacity=0.72,
+            marker_line_width=1.8,
+            marker_line_color="#f97316",
+            hovertemplate="<b>%{text} County</b><br>NDVI: %{z:.4f}<extra></extra>",
+        ))
+    else:
+        # Fallback rectangle until per-county data is fetched
+        ndvi_fill = ndvi_fill_rgba(ndvi_val)
+        if fl_counties:
+            citrus_geo2 = {"type": "FeatureCollection",
+                           "features": [f for f in fl_counties["features"]
+                                        if f["id"] in ALL_CITRUS_FIPS]}
+            c_lats2, c_lons2 = _geojson_latlons(citrus_geo2)
+            fig_map.add_trace(go.Scattermapbox(
+                lat=c_lats2, lon=c_lons2, mode="lines",
+                line=dict(color="#f97316", width=2.2),
+                hoverinfo="skip", showlegend=False,
+            ))
         fig_map.add_trace(go.Scattermapbox(
-            lat=c_lats, lon=c_lons, mode="lines",
-            line=dict(color="#f97316", width=2.2),
-            hoverinfo="skip", showlegend=False,
+            lat=[27.0, 28.2, 28.2, 27.0, 27.0],
+            lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
+            mode="lines", fill="toself",
+            fillcolor=ndvi_fill, line=dict(color="rgba(0,0,0,0)", width=0),
+            name="Citrus Belt",
+            hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
         ))
 
-    # Citrus belt shaded region — color encodes NDVI health value
-    ndvi_fill = ndvi_fill_rgba(ndvi_val)
+    # Regional average label
+    label_suffix = f" ({sel_year})" if sel_year else ""
     fig_map.add_trace(go.Scattermapbox(
-        lat=[27.0, 28.2, 28.2, 27.0, 27.0],
-        lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
-        mode="lines",
-        fill="toself",
-        fillcolor=ndvi_fill,
-        line=dict(color="rgba(0,0,0,0)", width=0),
-        name="Citrus Belt",
-        hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
+        lat=[27.55], lon=[-81.5], mode="markers+text",
+        marker=dict(size=13, color="#f97316"),
+        text=[f"Avg NDVI {ndvi_val:.3f}{label_suffix}"],
+        textposition="top right",
+        textfont=dict(color="#ffffff", size=11),
+        hovertemplate=f"Regional avg NDVI: {ndvi_val:.4f}<extra></extra>",
     ))
-    fig_map.add_trace(go.Scattermapbox(
-        lat=[27.6], lon=[-81.5], mode="markers+text",
-        marker=dict(size=14, color="#f97316"),
-        text=[f"NDVI {ndvi_val:.3f}"], textposition="top right",
-        textfont=dict(color="#ffffff", size=12),
-        hovertemplate=f"Citrus Belt<br>NDVI: {ndvi_val:.4f}<extra></extra>",
-    ))
+
     fig_map.update_layout(
         mapbox=dict(
             style="white-bg",
-            center=dict(lat=27.6, lon=-81.5),
-            zoom=6.0,
+            center=dict(lat=27.55, lon=-81.3),
+            zoom=6.2,
             layers=[{
                 "below": "traces",
                 "sourcetype": "raster",
@@ -355,7 +416,7 @@ with c_map:
                 "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
             }],
         ),
-        height=420, margin=dict(t=0, b=0, l=0, r=0),
+        height=390, margin=dict(t=0, b=0, l=0, r=0),
         paper_bgcolor="#ffffff", showlegend=False,
     )
     st.plotly_chart(fig_map, use_container_width=True, config=CHART_CFG)

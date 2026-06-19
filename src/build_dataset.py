@@ -8,7 +8,9 @@ from pathlib import Path
 
 RAW = Path(__file__).parent.parent / "data" / "raw"
 PROCESSED = Path(__file__).parent.parent / "data" / "processed"
-OUTPUT_PATH = PROCESSED / "dataset.csv"
+OUTPUT_PATH          = PROCESSED / "dataset.csv"
+COUNTY_RAW_PATH      = RAW / "ndvi_county_raw.csv"
+COUNTY_SEASONAL_PATH = PROCESSED / "ndvi_county_seasonal.csv"
 
 
 def growing_season_ndvi(ndvi_df: pd.DataFrame) -> pd.DataFrame:
@@ -23,6 +25,26 @@ def growing_season_ndvi(ndvi_df: pd.DataFrame) -> pd.DataFrame:
     season = df[df["month"].isin([10, 11, 12, 1, 2, 3, 4, 5])]
     return season.groupby("harvest_year")["mean_ndvi"].mean().reset_index()\
                  .rename(columns={"harvest_year": "year"})
+
+
+def county_season_ndvi(county_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute growing-season (Oct–May) mean NDVI per county per harvest year."""
+    df = county_df.copy()
+    df["date"]  = pd.to_datetime(df["date"])
+    df["month"] = df["date"].dt.month
+    df["year"]  = df["date"].dt.year
+    df["harvest_year"] = df.apply(
+        lambda r: r["year"] + 1 if r["month"] >= 10 else r["year"], axis=1
+    )
+    season = df[df["month"].isin([10, 11, 12, 1, 2, 3, 4, 5])]
+    return (
+        season.groupby(["harvest_year", "county", "geoid"])["mean_ndvi"]
+        .mean()
+        .reset_index()
+        .rename(columns={"harvest_year": "year"})
+        .sort_values(["year", "county"])
+        .reset_index(drop=True)
+    )
 
 
 def annual_avg_price(prices_df: pd.DataFrame) -> pd.DataFrame:
@@ -59,6 +81,14 @@ def main():
     df.to_csv(OUTPUT_PATH, index=False)
     print(f"Saved {len(df)}-row dataset to {OUTPUT_PATH}")
     print(df.tail())
+
+    if COUNTY_RAW_PATH.exists():
+        county_df = pd.read_csv(COUNTY_RAW_PATH)
+        county_seasonal = county_season_ndvi(county_df)
+        county_seasonal.to_csv(COUNTY_SEASONAL_PATH, index=False)
+        print(f"Saved {len(county_seasonal)}-row county seasonal NDVI → {COUNTY_SEASONAL_PATH}")
+    else:
+        print("No county NDVI file found — skipping ndvi_county_seasonal.csv")
 
 
 if __name__ == "__main__":
