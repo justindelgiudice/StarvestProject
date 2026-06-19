@@ -193,6 +193,24 @@ CHART_CFG   = {
 def gap():
     st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
 
+def hint(text: str):
+    st.markdown(
+        f'<p style="color:#94a3b8;font-size:.73rem;line-height:1.5;margin-top:.35rem;">{text}</p>',
+        unsafe_allow_html=True,
+    )
+
+def ndvi_fill_rgba(val: float, alpha: float = 0.45) -> str:
+    stops = [(0.0,(239,68,68)),(0.3,(249,115,22)),(0.5,(234,179,8)),(1.0,(34,197,94))]
+    for i in range(len(stops) - 1):
+        v0, c0 = stops[i]; v1, c1 = stops[i + 1]
+        if val <= v1 or i == len(stops) - 2:
+            t = max(0.0, min(1.0, (val - v0) / (v1 - v0) if v1 > v0 else 0.0))
+            r = int(c0[0] + t * (c1[0] - c0[0]))
+            g = int(c0[1] + t * (c1[1] - c0[1]))
+            b = int(c0[2] + t * (c1[2] - c0[2]))
+            return f"rgba({r},{g},{b},{alpha})"
+    return f"rgba(34,197,94,{alpha})"
+
 def chart_layout(fig, height=300):
     fig.update_layout(
         height=height,
@@ -252,6 +270,7 @@ k3.markdown(f"""<div class="kpi-card">
   </div>
   <div class="{pressure_class}">{pressure.capitalize()}</div>
   <div class="kpi-sub">OJ futures signal</div>
+  <p style="color:#94a3b8;font-size:.68rem;line-height:1.45;margin-top:.5rem;">Bullish = supply shortage → prices likely to rise. Bearish = oversupply → prices likely to fall. Neutral = near-average supply, no strong signal.</p>
 </div>""", unsafe_allow_html=True)
 
 k4.markdown(f"""<div class="kpi-card">
@@ -305,14 +324,15 @@ with c_map:
             hoverinfo="skip", showlegend=False,
         ))
 
-    # Citrus belt shaded region
+    # Citrus belt shaded region — color encodes NDVI health value
+    ndvi_fill = ndvi_fill_rgba(ndvi_val)
     fig_map.add_trace(go.Scattermapbox(
         lat=[27.0, 28.2, 28.2, 27.0, 27.0],
         lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
         mode="lines",
         fill="toself",
-        fillcolor=f"rgba(34,197,94,{min(ndvi_val * 0.6, 0.3)})",
-        line=dict(color="rgba(34,197,94,0)", width=0),
+        fillcolor=ndvi_fill,
+        line=dict(color="rgba(0,0,0,0)", width=0),
         name="Citrus Belt",
         hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
     ))
@@ -340,6 +360,29 @@ with c_map:
     )
     st.plotly_chart(fig_map, use_container_width=True, config=CHART_CFG)
 
+    # NDVI gradient legend
+    ndvi_pct = min(ndvi_val * 100, 100)
+    ndvi_status = "Healthy" if ndvi_val >= 0.5 else ("Moderate" if ndvi_val >= 0.3 else "Stressed")
+    ndvi_status_color = "#22c55e" if ndvi_val >= 0.5 else ("#eab308" if ndvi_val >= 0.3 else "#ef4444")
+    st.markdown(f"""
+<div style="margin-top:.4rem;padding:.5rem .1rem 0;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.3rem;">
+    <span style="color:#64748b;font-size:.7rem;font-weight:500;">NDVI Health Scale</span>
+    <span style="color:{ndvi_status_color};font-size:.7rem;font-weight:600;">{ndvi_status} &nbsp;({ndvi_val:.4f})</span>
+  </div>
+  <div style="position:relative;height:7px;border-radius:4px;
+              background:linear-gradient(to right,#ef4444 0%,#f97316 30%,#eab308 50%,#22c55e 100%);">
+    <div style="position:absolute;top:-4px;left:{ndvi_pct:.1f}%;width:3px;height:15px;
+                background:#0f172a;border-radius:2px;transform:translateX(-50%);"></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-top:.25rem;">
+    <span style="color:#ef4444;font-size:.65rem;">Stressed (&lt;0.3)</span>
+    <span style="color:#eab308;font-size:.65rem;">Moderate (0.3–0.5)</span>
+    <span style="color:#22c55e;font-size:.65rem;">Healthy (&gt;0.5)</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 with c_ndvi:
     st.markdown('<p class="section-title">NDVI Trend — Florida Citrus Belt</p>', unsafe_allow_html=True)
     fig_ndvi = go.Figure()
@@ -355,6 +398,7 @@ with c_ndvi:
     chart_layout(fig_ndvi, height=420)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
     st.plotly_chart(fig_ndvi, use_container_width=True, config=CHART_CFG)
+    hint("NDVI (Normalized Difference Vegetation Index) measures plant greenness from satellite data. Values above 0.5 indicate healthy, dense vegetation; below 0.3 signals stressed or sparse crops. Each data point is a 16-day average over the Florida citrus belt.")
 
 gap()
 # ── ROW 2: Yield + Backtest ───────────────────────────────────────────────────
@@ -371,6 +415,7 @@ with c_yield:
     chart_layout(fig_yield)
     fig_yield.update_layout(yaxis_title="Boxes", xaxis_title="")
     st.plotly_chart(fig_yield, use_container_width=True, config=CHART_CFG)
+    hint("Orange bars = yield fell below the long-run historical average (potential supply shortage). Blue bars = yield exceeded the average (abundant crop). The dashed line is the average across all years in the dataset.")
 
 with c_bt:
     st.markdown('<p class="section-title">Backtest — Predicted vs Actual Yield</p>', unsafe_allow_html=True)
@@ -386,6 +431,7 @@ with c_bt:
     chart_layout(fig_bt)
     fig_bt.update_layout(yaxis_title="Boxes", xaxis_title="")
     st.plotly_chart(fig_bt, use_container_width=True, config=CHART_CFG)
+    hint("A backtest checks how well the model would have predicted years it had never seen — trained only on earlier data each time, mimicking a real forecast. The closer the orange and blue lines, the more trustworthy the model's predictions.")
 
 gap()
 
@@ -482,6 +528,7 @@ st.markdown(f"""
   <span style="color:#94a3b8;font-size:.78rem;">— {corr_lbl}. Strength: {abs(corr):.0%}.</span>
 </div>
 """, unsafe_allow_html=True)
+hint("r (correlation coefficient) ranges from –1 to +1. r near –1 means lower yield reliably predicts higher OJ prices; r near +1 means higher yield predicts higher prices; r near 0 means no consistent link. The closer |r| is to 1, the stronger the relationship.")
 
 gap()
 
@@ -505,6 +552,11 @@ with b2:
   <div class="perf-row"><span class="perf-key">MAE</span><span class="perf-val">{params['mae_loo']/1e6:.1f}M boxes</span></div>
   <div class="perf-row"><span class="perf-key">Accuracy</span><span class="perf-val">{accuracy:.0%}</span></div>
   <div class="perf-row" style="border:none"><span class="perf-key">Backtest Years</span><span class="perf-val">{len(backtest)}</span></div>
+  <p style="color:#94a3b8;font-size:.7rem;line-height:1.55;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
+    <b style="color:#64748b;">R²</b> — how much yield variation the model explains (0 = nothing, 1 = perfect fit).<br>
+    <b style="color:#64748b;">MAE</b> — average prediction error in boxes; lower is better.<br>
+    <b style="color:#64748b;">Accuracy</b> — % of years the bullish/bearish/neutral price signal was predicted correctly.
+  </p>
 </div>""", unsafe_allow_html=True)
 
 with b3:
