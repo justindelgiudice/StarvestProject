@@ -1,3 +1,4 @@
+import base64
 import json
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import datetime
+import urllib.request
 
 DATA  = Path(__file__).parent.parent / "data" / "processed"
 RAW   = Path(__file__).parent.parent / "data" / "raw"
@@ -128,6 +130,33 @@ def load_data():
 def load_ndvi_raw():
     return pd.read_csv(RAW / "ndvi_raw.csv", parse_dates=["date"])
 
+@st.cache_data(ttl=86400)
+def load_florida_counties():
+    try:
+        url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
+        with urllib.request.urlopen(url, timeout=12) as r:
+            data = json.loads(r.read())
+        fl = {"type": "FeatureCollection",
+              "features": [f for f in data["features"] if f["id"].startswith("12")]}
+        return fl
+    except Exception:
+        return None
+
+def _geojson_latlons(geojson):
+    lats, lons = [], []
+    for feat in geojson["features"]:
+        geom = feat["geometry"]
+        polys = geom["coordinates"] if geom["type"] == "Polygon" else sum(geom["coordinates"], [])
+        for ring in polys:
+            for lon, lat in ring:
+                lons.append(lon); lats.append(lat)
+            lons.append(None); lats.append(None)
+    return lats, lons
+
+def _img_b64(path: Path) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
 try:
     dataset, backtest, params = load_data()
     ndvi_raw = load_ndvi_raw()
@@ -150,7 +179,16 @@ harvest_year   = now.year if now.month <= 6 else now.year + 1
 CHART_BG    = "#ffffff"
 GRID_COLOR  = "#e2e8f0"
 FONT_COLOR  = "#475569"
-CHART_CFG   = {"displayModeBar": "hover", "displaylogo": False}
+CHART_CFG   = {
+    "displayModeBar": "hover",
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "toImage", "select2d", "lasso2d",
+        "zoomIn2d", "zoomOut2d", "autoScale2d",
+        "hoverClosestCartesian", "hoverCompareCartesian",
+        "toggleSpikelines",
+    ],
+}
 
 def gap():
     st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
@@ -243,16 +281,38 @@ with c_map:
     st.markdown('<p class="section-title">Florida Citrus Belt</p>', unsafe_allow_html=True)
     ndvi_val = float(latest["mean_ndvi"])
 
-    # Draw citrus belt polygon on a dark map
-    lats = [27.0, 28.2, 28.2, 27.0, 27.0]
-    lons = [-82.0, -82.0, -81.0, -81.0, -82.0]
+    CITRUS_FIPS = {"12105", "12049", "12027", "12055"}  # Polk, Hardee, DeSoto, Highlands
+    fl_counties = load_florida_counties()
 
     fig_map = go.Figure()
+
+    # County boundary overlays (added first so citrus belt fill renders on top)
+    if fl_counties:
+        other = {"type": "FeatureCollection",
+                 "features": [f for f in fl_counties["features"] if f["id"] not in CITRUS_FIPS]}
+        citrus_cnty = {"type": "FeatureCollection",
+                       "features": [f for f in fl_counties["features"] if f["id"] in CITRUS_FIPS]}
+        all_lats, all_lons = _geojson_latlons(other)
+        c_lats, c_lons     = _geojson_latlons(citrus_cnty)
+        fig_map.add_trace(go.Scattermapbox(
+            lat=all_lats, lon=all_lons, mode="lines",
+            line=dict(color="rgba(255,255,255,0.35)", width=0.8),
+            hoverinfo="skip", showlegend=False,
+        ))
+        fig_map.add_trace(go.Scattermapbox(
+            lat=c_lats, lon=c_lons, mode="lines",
+            line=dict(color="#f97316", width=2.2),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    # Citrus belt shaded region
     fig_map.add_trace(go.Scattermapbox(
-        lat=lats, lon=lons, mode="lines",
+        lat=[27.0, 28.2, 28.2, 27.0, 27.0],
+        lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
+        mode="lines",
         fill="toself",
-        fillcolor=f"rgba(34,197,94,{min(ndvi_val * 0.6, 0.35)})",
-        line=dict(color="#22c55e", width=2),
+        fillcolor=f"rgba(34,197,94,{min(ndvi_val * 0.6, 0.3)})",
+        line=dict(color="rgba(34,197,94,0)", width=0),
         name="Citrus Belt",
         hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
     ))
@@ -266,8 +326,8 @@ with c_map:
     fig_map.update_layout(
         mapbox=dict(
             style="white-bg",
-            center=dict(lat=27.8, lon=-81.5),
-            zoom=5.5,
+            center=dict(lat=27.6, lon=-81.5),
+            zoom=6.0,
             layers=[{
                 "below": "traces",
                 "sourcetype": "raster",
@@ -285,8 +345,10 @@ with c_ndvi:
     fig_ndvi = go.Figure()
     fig_ndvi.add_trace(go.Scatter(
         x=ndvi_raw["date"], y=ndvi_raw["mean_ndvi"],
-        mode="lines", name="NDVI",
+        mode="lines+markers", name="NDVI",
         line=dict(color="#22c55e", width=1.5),
+        marker=dict(size=4, color="#22c55e", opacity=0.45,
+                    line=dict(color="#16a34a", width=0.5)),
         fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
         hovertemplate="<b>%{x|%b %Y}</b><br>NDVI: %{y:.4f}<extra></extra>",
     ))
@@ -446,20 +508,30 @@ with b2:
 </div>""", unsafe_allow_html=True)
 
 with b3:
-    st.markdown('<div class="panel-card"><div class="panel-title">🛰️ Data Sources</div></div>', unsafe_allow_html=True)
     ds_entries = [
-        (DS / "NASA-Logo-Large.png",       "NASA MODIS NDVI"),
-        (DS / "usda-1-logo.png",           "USDA NASS Data"),
-        (DS / "CME_Group_Logo.svg.png",    "CME OJ Futures"),
-        (DS / "earth_engine_icon.png",     "Google Earth Engine"),
+        (DS / "NASA-Logo-Large.png",    "NASA MODIS NDVI"),
+        (DS / "usda-1-logo.png",        "USDA NASS Data"),
+        (DS / "CME_Group_Logo.svg.png", "CME OJ Futures"),
+        (DS / "earth_engine_icon.png",  "Google Earth Engine"),
     ]
+    rows_html = ""
     for logo_path, label in ds_entries:
-        col_img, col_lbl = st.columns([1, 3], gap="small")
-        with col_img:
-            st.image(str(logo_path), width=52)
-        with col_lbl:
-            st.markdown(f'<p style="color:#0f172a;font-size:.85rem;font-weight:600;margin:0;padding-top:.6rem;">{label}</p>', unsafe_allow_html=True)
-        st.markdown('<hr style="margin:.3rem 0!important;border-color:#e2e8f0!important;"/>', unsafe_allow_html=True)
+        b64 = _img_b64(logo_path)
+        rows_html += f"""
+<div style="display:flex;align-items:center;gap:.75rem;
+            padding:.55rem 0;border-bottom:1px solid #e2e8f0;">
+  <div style="width:40px;height:40px;flex-shrink:0;
+              display:flex;align-items:center;justify-content:center;">
+    <img src="data:image/png;base64,{b64}"
+         style="max-width:40px;max-height:40px;object-fit:contain;"/>
+  </div>
+  <span style="color:#0f172a;font-size:.85rem;font-weight:600;line-height:1.2;">{label}</span>
+</div>"""
+    st.markdown(f"""
+<div class="panel-card">
+  <div class="panel-title">🛰️ Data Sources</div>
+  {rows_html}
+</div>""", unsafe_allow_html=True)
 
 gap()
 
