@@ -9,8 +9,18 @@ DATA = Path(__file__).parent.parent / "data" / "processed"
 LOGO = Path(__file__).parent.parent / "assets" / "StarvestLogo.png"
 
 st.set_page_config(page_title="Starvest", page_icon="🍊", layout="wide")
-st.image(str(LOGO), width=400)
-st.caption("NASA MODIS NDVI · USDA Yield Data · OJ Futures")
+
+# ── Global spacing fixes ─────────────────────────────────────────────────────
+st.markdown("""
+<style>
+    .block-container { padding: 2rem 3rem 2rem 3rem; max-width: 1200px; }
+    [data-testid="stMetric"] { background: #1e1e2e; border-radius: 10px; padding: 1rem 1.2rem; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem; }
+    h2, h3 { margin-top: 1.8rem !important; margin-bottom: 0.4rem !important; }
+    hr { margin: 1.8rem 0 !important; }
+    .stCaption { margin-bottom: 1.5rem; }
+</style>
+""", unsafe_allow_html=True)
 
 
 @st.cache_data
@@ -35,63 +45,93 @@ except FileNotFoundError:
     st.error("Data not found. Run the pipeline first: `python src/build_dataset.py` then `python src/model.py` and `python src/backtest.py`")
     st.stop()
 
-# ── Sidebar: year selector ──────────────────────────────────────────────────
-latest_year = int(dataset["year"].max())
-selected_year = st.sidebar.selectbox("Forecast year", sorted(dataset["year"].unique(), reverse=True))
-row = dataset[dataset["year"] == selected_year].iloc[0]
-
-# ── KPI row ─────────────────────────────────────────────────────────────────
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Season Avg NDVI", f"{row['mean_ndvi']:.4f}")
-col2.metric("Predicted Yield", f"{row['yield_boxes']:,.0f}K boxes")
-col3.metric("Hist. Average", f"{params['historical_avg_yield']:,.0f}K boxes",
-            delta=f"{(row['yield_boxes'] - params['historical_avg_yield']):+,.0f}")
-
-pressure = row["price_pressure"]
-pressure_color = {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}
-col4.metric("Price Pressure", f"{pressure_color[pressure]} {pressure.capitalize()}")
+# ── Header ───────────────────────────────────────────────────────────────────
+st.image(str(LOGO), width=380)
+st.caption("NASA MODIS NDVI · USDA Yield Data · OJ Futures")
 
 st.divider()
 
-# ── NDVI trend ───────────────────────────────────────────────────────────────
+# ── Sidebar: year selector ───────────────────────────────────────────────────
+selected_year = st.sidebar.selectbox("Forecast year", sorted(dataset["year"].unique(), reverse=True))
+row = dataset[dataset["year"] == selected_year].iloc[0]
+
+# ── KPI row ──────────────────────────────────────────────────────────────────
+col1, col2, col3, col4 = st.columns(4, gap="medium")
+col1.metric("Season Avg NDVI", f"{row['mean_ndvi']:.4f}")
+col2.metric("Predicted Yield", f"{row['yield_boxes']:,.0f} boxes")
+col3.metric(
+    "Hist. Average",
+    f"{params['historical_avg_yield']:,.0f} boxes",
+    delta=f"{(row['yield_boxes'] - params['historical_avg_yield']):+,.0f}",
+)
+pressure = row["price_pressure"]
+pressure_icon = {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}[pressure]
+col4.metric("Price Pressure", f"{pressure_icon} {pressure.capitalize()}")
+
+st.divider()
+
+# ── NDVI trend ────────────────────────────────────────────────────────────────
 st.subheader("NDVI Trend — Florida Citrus Belt")
-fig_ndvi = px.line(ndvi_raw, x="date", y="mean_ndvi",
-                   labels={"mean_ndvi": "Mean NDVI", "date": "Date"},
-                   color_discrete_sequence=["#2ecc71"])
-fig_ndvi.update_layout(height=300, margin=dict(t=20))
+fig_ndvi = px.line(
+    ndvi_raw, x="date", y="mean_ndvi",
+    labels={"mean_ndvi": "Mean NDVI", "date": "Date"},
+    color_discrete_sequence=["#2ecc71"],
+)
+fig_ndvi.update_layout(height=320, margin=dict(t=10, b=10, l=0, r=0))
 st.plotly_chart(fig_ndvi, use_container_width=True)
 
-# ── Yield vs historical average ──────────────────────────────────────────────
+# ── Yield vs historical average ───────────────────────────────────────────────
 st.subheader("Yield vs Historical Average")
 fig_yield = go.Figure()
-fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], name="Actual Yield",
-                  marker_color="#f39c12")
-fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash",
-                    line_color="white", annotation_text="Hist. Avg")
-fig_yield.update_layout(height=300, margin=dict(t=20),
-                        xaxis_title="Year", yaxis_title="1000 Boxes")
+fig_yield.add_bar(
+    x=dataset["year"], y=dataset["yield_boxes"],
+    name="Actual Yield", marker_color="#f39c12",
+)
+fig_yield.add_hline(
+    y=params["historical_avg_yield"], line_dash="dash",
+    line_color="white", annotation_text="Hist. Avg",
+)
+fig_yield.update_layout(
+    height=320, margin=dict(t=10, b=10, l=0, r=0),
+    xaxis_title="Year", yaxis_title="Boxes",
+)
 st.plotly_chart(fig_yield, use_container_width=True)
 
 st.divider()
 
-# ── Backtest panel ───────────────────────────────────────────────────────────
+# ── Backtest panel ────────────────────────────────────────────────────────────
 st.subheader("Backtest — Predicted vs Actual Yield")
 fig_bt = go.Figure()
-fig_bt.add_scatter(x=backtest["year"], y=backtest["actual_yield"],
-                   mode="lines+markers", name="Actual", line=dict(color="#e74c3c"))
-fig_bt.add_scatter(x=backtest["year"], y=backtest["predicted_yield"],
-                   mode="lines+markers", name="Predicted", line=dict(color="#3498db", dash="dash"))
-fig_bt.update_layout(height=300, margin=dict(t=20),
-                     xaxis_title="Year", yaxis_title="1000 Boxes")
+fig_bt.add_scatter(
+    x=backtest["year"], y=backtest["actual_yield"],
+    mode="lines+markers", name="Actual", line=dict(color="#e74c3c"),
+)
+fig_bt.add_scatter(
+    x=backtest["year"], y=backtest["predicted_yield"],
+    mode="lines+markers", name="Predicted", line=dict(color="#3498db", dash="dash"),
+)
+fig_bt.update_layout(
+    height=320, margin=dict(t=10, b=10, l=0, r=0),
+    xaxis_title="Year", yaxis_title="Boxes",
+)
 st.plotly_chart(fig_bt, use_container_width=True)
 
 accuracy = (backtest["actual_pressure"] == backtest["predicted_pressure"]).mean()
-st.metric("Price Pressure Accuracy (backtest)", f"{accuracy:.0%}")
-st.dataframe(backtest[["year", "actual_yield", "predicted_yield",
-                        "pct_error", "actual_pressure", "predicted_pressure"]]\
-             .rename(columns={"pct_error": "% Error"})\
-             .style.format({"actual_yield": "{:,.0f}", "predicted_yield": "{:,.0f}",
-                            "% Error": "{:+.1f}%"}),
-             use_container_width=True)
 
-st.caption(f"Model R² (train): {params['r2_train']:.3f} · MAE (LOO): {params['mae_loo']:,.0f}K boxes")
+col_acc, col_empty = st.columns([1, 3])
+col_acc.metric("Price Pressure Accuracy", f"{accuracy:.0%}")
+
+st.markdown("####")
+st.dataframe(
+    backtest[["year", "actual_yield", "predicted_yield", "pct_error", "actual_pressure", "predicted_pressure"]]
+    .rename(columns={"pct_error": "% Error"})
+    .style.format({
+        "actual_yield": "{:,.0f}",
+        "predicted_yield": "{:,.0f}",
+        "% Error": "{:+.1f}%",
+    }),
+    use_container_width=True,
+)
+
+st.divider()
+st.caption(f"Model R² (train): {params['r2_train']:.3f} · MAE (LOO): {params['mae_loo']:,.0f} boxes")
