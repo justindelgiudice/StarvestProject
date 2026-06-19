@@ -4,22 +4,91 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+from datetime import datetime
 
-DATA = Path(__file__).parent.parent / "data" / "processed"
-LOGO = Path(__file__).parent.parent / "assets" / "StarvestLogo.png"
+DATA  = Path(__file__).parent.parent / "data" / "processed"
+RAW   = Path(__file__).parent.parent / "data" / "raw"
+LOGO  = Path(__file__).parent.parent / "assets" / "StarvestLogo.png"
 
-st.set_page_config(page_title="Starvest", page_icon="🍊", layout="wide")
+st.set_page_config(
+    page_title="Starvest",
+    page_icon="🍊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-# ── Global spacing fixes ─────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding: 2rem 3rem 2rem 3rem; max-width: 1200px; }
-    [data-testid="stMetric"] { background: #1e1e2e; border-radius: 10px; padding: 1rem 1.2rem; }
-    [data-testid="stMetricLabel"] p { font-size: 0.8rem; }
-    div[data-testid="stHeading"] { margin-top: 1.8rem; margin-bottom: 0.4rem; }
-    hr { margin: 1.8rem 0 !important; }
-    div[data-testid="stCaptionContainer"] { margin-bottom: 1.5rem; }
-    .stButton > button { background-color: transparent !important; }
+  /* ── Base ── */
+  [data-testid="stAppViewContainer"] { background: #070b18; }
+  [data-testid="stHeader"]           { background: #070b18; }
+  [data-testid="stSidebar"]          { background: #0d1226; }
+  .block-container { padding: 1.5rem 2.5rem 2rem; max-width: 1400px; }
+
+  /* ── KPI cards ── */
+  .kpi-card {
+    background: linear-gradient(145deg, #111827, #1a2235);
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    padding: 1.1rem 1.3rem;
+    height: 100%;
+  }
+  .kpi-label { color: #6b8cba; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .3rem; }
+  .kpi-value { color: #ffffff; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+  .kpi-sub   { color: #6b8cba; font-size: 0.75rem; margin-top: .3rem; }
+  .kpi-bullish { color: #22c55e; font-size: 1.4rem; font-weight: 700; }
+  .kpi-bearish { color: #ef4444; font-size: 1.4rem; font-weight: 700; }
+  .kpi-neutral { color: #f59e0b; font-size: 1.4rem; font-weight: 700; }
+  .kpi-trend-pos { color: #22c55e; font-size: 1.4rem; font-weight: 700; }
+  .kpi-trend-neg { color: #ef4444; font-size: 1.4rem; font-weight: 700; }
+
+  /* ── Section headers ── */
+  .section-title {
+    color: #94a3b8;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin-bottom: .5rem;
+    margin-top: .2rem;
+  }
+
+  /* ── Panel cards ── */
+  .panel-card {
+    background: linear-gradient(145deg, #111827, #1a2235);
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    padding: 1.3rem 1.5rem;
+  }
+  .panel-title {
+    color: #f97316;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-weight: 600;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Outlook panel ── */
+  .outlook-metric { display: flex; justify-content: space-between; align-items: center; padding: .5rem 0; border-bottom: 1px solid #1e3a5f; }
+  .outlook-key    { color: #94a3b8; font-size: .82rem; }
+  .outlook-val    { color: #ffffff; font-size: .9rem; font-weight: 600; }
+
+  /* ── Model perf table ── */
+  .perf-row { display: flex; justify-content: space-between; align-items: center; padding: .45rem 0; border-bottom: 1px solid #1e2d45; }
+  .perf-key { color: #94a3b8; font-size: .8rem; }
+  .perf-val { color: #38bdf8; font-size: .85rem; font-weight: 600; }
+
+  /* ── Data sources ── */
+  .ds-item { color: #94a3b8; font-size: .8rem; padding: .4rem 0; border-bottom: 1px solid #1e2d45; display: flex; align-items: center; gap: .5rem; }
+  .ds-dot   { width: 7px; height: 7px; border-radius: 50%; background: #f97316; flex-shrink: 0; }
+
+  /* ── Divider ── */
+  hr { border-color: #1e3a5f !important; margin: 1.2rem 0 !important; }
+
+  /* ── Hide streamlit chrome ── */
+  #MainMenu { visibility: hidden; }
+  footer     { visibility: hidden; }
+  [data-testid="stToolbar"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,107 +101,208 @@ def load_data():
         params = json.load(f)
     return dataset, backtest, params
 
-
 @st.cache_data
 def load_ndvi_raw():
-    path = Path(__file__).parent.parent / "data" / "raw" / "ndvi_raw.csv"
-    return pd.read_csv(path, parse_dates=["date"])
-
+    return pd.read_csv(RAW / "ndvi_raw.csv", parse_dates=["date"])
 
 try:
     dataset, backtest, params = load_data()
     ndvi_raw = load_ndvi_raw()
 except FileNotFoundError:
-    st.error("Data not found. Run the pipeline first: `python src/build_dataset.py` then `python src/model.py` and `python src/backtest.py`")
+    st.error("Run the pipeline first: build_dataset → model → backtest")
     st.stop()
 
-# ── Header ───────────────────────────────────────────────────────────────────
-st.image(str(LOGO), width=500)
-st.caption("NASA MODIS NDVI · USDA Yield Data · OJ Futures")
+dataset = dataset.sort_values("year").reset_index(drop=True)
+latest  = dataset.iloc[-1]
+prev    = dataset.iloc[-2] if len(dataset) > 1 else latest
 
-st.divider()
+# ── Derived metrics ─────────────────────────────────────────────────────────
+ndvi_trend_pct = (latest["mean_ndvi"] - prev["mean_ndvi"]) / prev["mean_ndvi"] * 100
+accuracy       = (backtest["actual_pressure"] == backtest["predicted_pressure"]).mean()
+pressure       = latest["price_pressure"]
+now            = datetime.now()
+harvest_month  = "Nov" if now.month <= 10 else "Nov"
+harvest_year   = now.year if now.month <= 6 else now.year + 1
 
-# ── Sidebar: year selector ───────────────────────────────────────────────────
-selected_year = st.sidebar.selectbox("Forecast year", sorted(dataset["year"].unique(), reverse=True))
-row = dataset[dataset["year"] == selected_year].iloc[0]
+CHART_BG    = "rgba(0,0,0,0)"
+GRID_COLOR  = "#1e3a5f"
+FONT_COLOR  = "#94a3b8"
 
-# ── KPI row ──────────────────────────────────────────────────────────────────
-col1, col2, col3, col4 = st.columns(4, gap="medium")
-col1.metric("Season Avg NDVI", f"{row['mean_ndvi']:.4f}")
-col2.metric("Predicted Yield", f"{row['yield_boxes']:,.0f} boxes")
-col3.metric(
-    "Hist. Average",
-    f"{params['historical_avg_yield']:,.0f} boxes",
-    delta=f"{(row['yield_boxes'] - params['historical_avg_yield']):+,.0f}",
-)
-pressure = row["price_pressure"]
-pressure_icon = {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}[pressure]
-col4.metric("Price Pressure", f"{pressure_icon} {pressure.capitalize()}")
+def chart_layout(fig, height=300):
+    fig.update_layout(
+        height=height,
+        paper_bgcolor=CHART_BG,
+        plot_bgcolor=CHART_BG,
+        font=dict(color=FONT_COLOR, size=11),
+        margin=dict(t=10, b=30, l=10, r=10),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+        xaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR)),
+        yaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, tickfont=dict(color=FONT_COLOR)),
+    )
+    return fig
 
-st.divider()
+# ── HEADER ───────────────────────────────────────────────────────────────────
+h_col1, h_col2 = st.columns([3, 1])
+with h_col1:
+    st.image(str(LOGO), width=460)
+    st.markdown('<p style="color:#6b8cba;font-size:.82rem;margin-top:-.5rem;">Satellite-Powered Citrus Commodity Forecasting</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#374151;font-size:.75rem;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>', unsafe_allow_html=True)
 
-# ── NDVI trend ────────────────────────────────────────────────────────────────
-st.subheader("NDVI Trend — Florida Citrus Belt")
-fig_ndvi = px.line(
-    ndvi_raw, x="date", y="mean_ndvi",
-    labels={"mean_ndvi": "Mean NDVI", "date": "Date"},
-    color_discrete_sequence=["#2ecc71"],
-)
-fig_ndvi.update_layout(height=320, margin=dict(t=10, b=10, l=0, r=0))
-st.plotly_chart(fig_ndvi, use_container_width=True)
+st.markdown("<hr/>", unsafe_allow_html=True)
 
-# ── Yield vs historical average ───────────────────────────────────────────────
-st.subheader("Yield vs Historical Average")
-fig_yield = go.Figure()
-fig_yield.add_bar(
-    x=dataset["year"], y=dataset["yield_boxes"],
-    name="Actual Yield", marker_color="#f39c12",
-)
-fig_yield.add_hline(
-    y=params["historical_avg_yield"], line_dash="dash",
-    line_color="white", annotation_text="Hist. Avg",
-)
-fig_yield.update_layout(
-    height=320, margin=dict(t=10, b=10, l=0, r=0),
-    xaxis_title="Year", yaxis_title="Boxes",
-)
-st.plotly_chart(fig_yield, use_container_width=True)
+# ── KPI ROW ──────────────────────────────────────────────────────────────────
+k1, k2, k3, k4, k5, k6 = st.columns(6, gap="small")
 
-st.divider()
+pressure_class = {"bullish": "kpi-bullish", "bearish": "kpi-bearish", "neutral": "kpi-neutral"}[pressure]
+trend_class    = "kpi-trend-pos" if ndvi_trend_pct >= 0 else "kpi-trend-neg"
+trend_arrow    = "▲" if ndvi_trend_pct >= 0 else "▼"
 
-# ── Backtest panel ────────────────────────────────────────────────────────────
-st.subheader("Backtest — Predicted vs Actual Yield")
-fig_bt = go.Figure()
-fig_bt.add_scatter(
-    x=backtest["year"], y=backtest["actual_yield"],
-    mode="lines+markers", name="Actual", line=dict(color="#e74c3c"),
-)
-fig_bt.add_scatter(
-    x=backtest["year"], y=backtest["predicted_yield"],
-    mode="lines+markers", name="Predicted", line=dict(color="#3498db", dash="dash"),
-)
-fig_bt.update_layout(
-    height=320, margin=dict(t=10, b=10, l=0, r=0),
-    xaxis_title="Year", yaxis_title="Boxes",
-)
-st.plotly_chart(fig_bt, use_container_width=True)
+k1.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">NDVI Current Average</div>
+  <div class="kpi-value">{latest['mean_ndvi']:.4f}</div>
+  <div class="kpi-sub">Season composite</div>
+</div>""", unsafe_allow_html=True)
 
-accuracy = (backtest["actual_pressure"] == backtest["predicted_pressure"]).mean()
+k2.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">Predicted Yield</div>
+  <div class="kpi-value">{latest['yield_boxes']/1e6:.2f}M</div>
+  <div class="kpi-sub">Boxes · {int(latest['year'])}</div>
+</div>""", unsafe_allow_html=True)
 
-col_acc, col_empty = st.columns([1, 3])
-col_acc.metric("Price Pressure Accuracy", f"{accuracy:.0%}")
+k3.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">Market Pressure</div>
+  <div class="{pressure_class}">{pressure.capitalize()}</div>
+  <div class="kpi-sub">OJ futures signal</div>
+</div>""", unsafe_allow_html=True)
 
-st.markdown("####")
-st.dataframe(
-    backtest[["year", "actual_yield", "predicted_yield", "pct_error", "actual_pressure", "predicted_pressure"]]
-    .rename(columns={"pct_error": "% Error"})
-    .style.format({
-        "actual_yield": "{:,.0f}",
-        "predicted_yield": "{:,.0f}",
-        "% Error": "{:+.1f}%",
-    }),
-    use_container_width=True,
-)
+k4.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">Model Accuracy</div>
+  <div class="kpi-value">{accuracy:.0%}</div>
+  <div class="kpi-sub">Backtest · price pressure</div>
+</div>""", unsafe_allow_html=True)
 
-st.divider()
-st.caption(f"Model R² (train): {params['r2_train']:.3f} · MAE (LOO): {params['mae_loo']:,.0f} boxes")
+k5.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">Trend Signal</div>
+  <div class="{trend_class}">{trend_arrow} {abs(ndvi_trend_pct):.1f}%</div>
+  <div class="kpi-sub">vs. last season</div>
+</div>""", unsafe_allow_html=True)
+
+k6.markdown(f"""<div class="kpi-card">
+  <div class="kpi-label">Est. Harvest</div>
+  <div class="kpi-value">{harvest_month} {harvest_year}</div>
+  <div class="kpi-sub">Season start</div>
+</div>""", unsafe_allow_html=True)
+
+st.markdown("<div style='margin-top:1.2rem'></div>", unsafe_allow_html=True)
+
+# ── ROW 1: Map + NDVI Trend ───────────────────────────────────────────────────
+c_map, c_ndvi = st.columns(2, gap="medium")
+
+with c_map:
+    st.markdown('<p class="section-title">Florida Citrus Belt</p>', unsafe_allow_html=True)
+    ndvi_val = float(latest["mean_ndvi"])
+
+    # Draw citrus belt polygon on a dark map
+    lats = [27.0, 28.2, 28.2, 27.0, 27.0]
+    lons = [-82.0, -82.0, -81.0, -81.0, -82.0]
+
+    fig_map = go.Figure()
+    fig_map.add_trace(go.Scattermapbox(
+        lat=lats, lon=lons, mode="lines",
+        fill="toself",
+        fillcolor=f"rgba(34,197,94,{min(ndvi_val * 0.6, 0.35)})",
+        line=dict(color="#22c55e", width=2),
+        name="Citrus Belt",
+        hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
+    ))
+    fig_map.add_trace(go.Scattermapbox(
+        lat=[27.6], lon=[-81.5], mode="markers+text",
+        marker=dict(size=14, color="#f97316"),
+        text=[f"NDVI {ndvi_val:.3f}"], textposition="top right",
+        textfont=dict(color="#ffffff", size=11),
+        hovertemplate=f"Citrus Belt<br>NDVI: {ndvi_val:.4f}<extra></extra>",
+    ))
+    fig_map.update_layout(
+        mapbox=dict(style="carto-darkmatter", center=dict(lat=27.8, lon=-81.5), zoom=5.5),
+        height=300, margin=dict(t=0, b=0, l=0, r=0),
+        paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
+    )
+    st.plotly_chart(fig_map, use_container_width=True)
+
+with c_ndvi:
+    st.markdown('<p class="section-title">NDVI Trend — Florida Citrus Belt</p>', unsafe_allow_html=True)
+    fig_ndvi = go.Figure()
+    fig_ndvi.add_trace(go.Scatter(
+        x=ndvi_raw["date"], y=ndvi_raw["mean_ndvi"],
+        mode="lines", name="NDVI",
+        line=dict(color="#22c55e", width=1.5),
+        fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
+    ))
+    chart_layout(fig_ndvi)
+    fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
+    st.plotly_chart(fig_ndvi, use_container_width=True)
+
+# ── ROW 2: Yield + Backtest ───────────────────────────────────────────────────
+c_yield, c_bt = st.columns(2, gap="medium")
+
+with c_yield:
+    st.markdown('<p class="section-title">Yield vs Historical Average</p>', unsafe_allow_html=True)
+    colors = ["#f97316" if y < params["historical_avg_yield"] else "#38bdf8" for y in dataset["yield_boxes"]]
+    fig_yield = go.Figure()
+    fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Yield")
+    fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash", line_color="#6b8cba",
+                        annotation_text="Hist. Avg", annotation_font_color="#6b8cba")
+    chart_layout(fig_yield)
+    fig_yield.update_layout(yaxis_title="Boxes", xaxis_title="")
+    st.plotly_chart(fig_yield, use_container_width=True)
+
+with c_bt:
+    st.markdown('<p class="section-title">Backtest — Predicted vs Actual Yield</p>', unsafe_allow_html=True)
+    fig_bt = go.Figure()
+    fig_bt.add_scatter(x=backtest["year"], y=backtest["actual_yield"],
+                       mode="lines+markers", name="Actual",
+                       line=dict(color="#f97316", width=2),
+                       marker=dict(size=6))
+    fig_bt.add_scatter(x=backtest["year"], y=backtest["predicted_yield"],
+                       mode="lines+markers", name="Predicted",
+                       line=dict(color="#38bdf8", width=2, dash="dash"),
+                       marker=dict(size=6))
+    chart_layout(fig_bt)
+    fig_bt.update_layout(yaxis_title="Boxes", xaxis_title="")
+    st.plotly_chart(fig_bt, use_container_width=True)
+
+st.markdown("<hr/>", unsafe_allow_html=True)
+
+# ── BOTTOM ROW: Outlook | Model Perf | Data Sources ───────────────────────────
+b1, b2, b3 = st.columns(3, gap="medium")
+
+with b1:
+    st.markdown(f"""<div class="panel-card">
+  <div class="panel-title">🍊 {harvest_year} Outlook</div>
+  <div class="outlook-metric"><span class="outlook-key">Predicted Yield</span><span class="outlook-val">{latest['yield_boxes']/1e6:.2f}M boxes</span></div>
+  <div class="outlook-metric"><span class="outlook-key">Market Signal</span><span class="outlook-val" style="color:{'#22c55e' if pressure=='bullish' else '#ef4444' if pressure=='bearish' else '#f59e0b'}">{pressure.capitalize()}</span></div>
+  <div class="outlook-metric"><span class="outlook-key">Confidence Level</span><span class="outlook-val">{accuracy:.0%}</span></div>
+  <div class="outlook-metric" style="border:none"><span class="outlook-key">Trend</span><span class="outlook-val" style="color:{'#22c55e' if ndvi_trend_pct>=0 else '#ef4444'}">{trend_arrow} {abs(ndvi_trend_pct):.1f}%</span></div>
+  <p style="color:#374151;font-size:.7rem;margin-top:1rem;">Forecasts satellite conditions and consistent NDVI trends. Higher yields than historical average indicates lower price pressure.</p>
+</div>""", unsafe_allow_html=True)
+
+with b2:
+    st.markdown(f"""<div class="panel-card">
+  <div class="panel-title">📊 Model Performance</div>
+  <div class="perf-row"><span class="perf-key">R² Score</span><span class="perf-val">{params['r2_train']:.2f}</span></div>
+  <div class="perf-row"><span class="perf-key">MAE</span><span class="perf-val">{params['mae_loo']/1e6:.1f}M boxes</span></div>
+  <div class="perf-row"><span class="perf-key">Accuracy</span><span class="perf-val">{accuracy:.0%}</span></div>
+  <div class="perf-row" style="border:none"><span class="perf-key">Backtest Years</span><span class="perf-val">{len(backtest)}</span></div>
+</div>""", unsafe_allow_html=True)
+
+with b3:
+    st.markdown(f"""<div class="panel-card">
+  <div class="panel-title">🛰️ Data Sources</div>
+  <div class="ds-item"><div class="ds-dot"></div>NASA MODIS NDVI</div>
+  <div class="ds-item"><div class="ds-dot"></div>USDA NASS Data</div>
+  <div class="ds-item"><div class="ds-dot"></div>CME OJ Futures</div>
+  <div class="ds-item" style="border:none"><div class="ds-dot"></div>Google Earth Engine</div>
+</div>""", unsafe_allow_html=True)
+
+st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+st.markdown(f'<p style="color:#374151;font-size:.72rem;text-align:center;">⚠️ View Detailed Data & Methodology</p>', unsafe_allow_html=True)
