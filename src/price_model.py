@@ -98,19 +98,44 @@ def _season_ndvi(harvest_year: int) -> float | None:
 def forecast_yield_vs_avg(forecast_year: int, historical_avg_yield: float) -> tuple[float, str]:
     """
     Predict yield_vs_avg for forecast_year using the yield model + current NDVI.
-    Returns (yield_vs_avg, source) where source is 'yield_model' or 'last_known'.
+
+    Handles two model types:
+    - county_panel: predicts each county separately using per-county NDVI from
+      ndvi_county_seasonal.csv, then aggregates to statewide via coverage fraction.
+    - statewide (legacy): applies coefficients directly to regional-average NDVI.
+
+    Returns (yield_vs_avg, source).
     """
-    if YIELD_PARAMS.exists():
-        with open(YIELD_PARAMS) as f:
-            yp = json.load(f)
-        ndvi = _season_ndvi(forecast_year)
-        if ndvi is not None:
-            predicted_yield = (
-                yp["intercept"]
-                + yp["coef_ndvi"] * ndvi
-                + yp["coef_year"] * forecast_year
-            )
-            return float(predicted_yield / yp["historical_avg_yield"]), "yield_model"
+    if not YIELD_PARAMS.exists():
+        return None, "unavailable"
+
+    with open(YIELD_PARAMS) as f:
+        yp = json.load(f)
+
+    if yp.get("training_mode") == "county_panel":
+        county_seasonal_path = ROOT / "data" / "processed" / "ndvi_county_seasonal.csv"
+        if county_seasonal_path.exists():
+            cs = pd.read_csv(county_seasonal_path)
+            yr = cs[cs["year"] == forecast_year].dropna(subset=["mean_ndvi"])
+            if not yr.empty:
+                county_preds = (
+                    yp["intercept"]
+                    + yp["coef_ndvi"] * yr["mean_ndvi"].values
+                    + yp["coef_year"] * forecast_year
+                )
+                predicted_yield = float(county_preds.sum()) / yp["coverage_fraction"]
+                return float(predicted_yield / yp["historical_avg_yield"]), "yield_model_county"
+
+    # Statewide / fallback: single regional-average NDVI
+    ndvi = _season_ndvi(forecast_year)
+    if ndvi is not None:
+        predicted_yield = (
+            yp["intercept"]
+            + yp["coef_ndvi"] * ndvi
+            + yp["coef_year"] * forecast_year
+        )
+        return float(predicted_yield / yp["historical_avg_yield"]), "yield_model"
+
     return None, "unavailable"
 
 
