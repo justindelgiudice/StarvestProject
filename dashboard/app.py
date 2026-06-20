@@ -242,9 +242,14 @@ def chart_layout(fig, height=300):
 # ── HEADER ───────────────────────────────────────────────────────────────────
 h_col1, h_col2 = st.columns([3, 1])
 with h_col1:
-    st.image(str(LOGO), width=460)
-    st.markdown('<p style="color:#64748b;font-size:.82rem;margin-top:-.5rem;">Satellite-Powered Citrus Commodity Forecasting</p>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#94a3b8;font-size:.75rem;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>', unsafe_allow_html=True)
+    logo_b64 = _img_b64(LOGO)
+    st.markdown(f"""
+<div style="display:flex;flex-direction:column;align-items:flex-start;gap:0;line-height:1;">
+  <img src="data:image/png;base64,{logo_b64}" style="width:460px;display:block;margin:0;padding:0;"/>
+  <p style="color:#64748b;font-size:.82rem;margin:4px 0 2px 0;padding:0;">Satellite-Powered Citrus Commodity Forecasting</p>
+  <p style="color:#94a3b8;font-size:.75rem;margin:0;padding:0;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("<hr/>", unsafe_allow_html=True)
 
@@ -360,14 +365,17 @@ with c_map:
     if fl_counties and year_data is not None and not year_data.empty:
         citrus_features = [f for f in fl_counties["features"] if f["id"] in ALL_CITRUS_FIPS]
         citrus_geo      = {"type": "FeatureCollection", "features": citrus_features}
+        z_vals = year_data["mean_ndvi"].tolist()
+        z_min  = max(0.0, min(z_vals) - 0.05)
+        z_max  = min(1.0, max(z_vals) + 0.05)
         fig_map.add_trace(go.Choroplethmapbox(
             geojson=citrus_geo,
             locations=year_data["geoid"].astype(str).tolist(),
-            z=year_data["mean_ndvi"].tolist(),
+            z=z_vals,
             text=year_data["county"].tolist(),
             featureidkey="id",
             colorscale=[[0,"#ef4444"],[0.3,"#f97316"],[0.5,"#eab308"],[1.0,"#22c55e"]],
-            zmin=0.0, zmax=1.0,
+            zmin=z_min, zmax=z_max,
             showscale=False,
             marker_opacity=0.72,
             marker_line_width=1.8,
