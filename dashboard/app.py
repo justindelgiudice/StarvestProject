@@ -167,12 +167,30 @@ def load_county_seasonal():
         return pd.read_csv(path)
     return None
 
+@st.cache_data
+def load_price_model_params():
+    path = DATA / "price_model_params.json"
+    if not path.exists():
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+@st.cache_data
+def load_price_backtest():
+    path = DATA / "price_backtest_results.csv"
+    if not path.exists():
+        return None
+    return pd.read_csv(path)
+
 try:
     dataset, backtest, params = load_data()
     ndvi_raw = load_ndvi_raw()
 except FileNotFoundError:
     st.error("Run the pipeline first: build_dataset → model → backtest")
     st.stop()
+
+price_params = load_price_model_params()
+price_bt     = load_price_backtest()
 
 dataset = dataset.sort_values("year").reset_index(drop=True)
 latest  = dataset.iloc[-1]
@@ -181,7 +199,8 @@ prev    = dataset.iloc[-2] if len(dataset) > 1 else latest
 # ── Derived metrics ─────────────────────────────────────────────────────────
 ndvi_trend_pct = (latest["mean_ndvi"] - prev["mean_ndvi"]) / prev["mean_ndvi"] * 100
 accuracy       = (backtest["actual_pressure"] == backtest["predicted_pressure"]).mean()
-pressure       = latest["price_pressure"]
+# Use price model's trained signal if available; fall back to rule-based threshold
+pressure       = price_params["price_pressure"] if price_params else latest["price_pressure"]
 now            = datetime.now()
 harvest_month  = "Nov" if now.month <= 10 else "Nov"
 harvest_year   = now.year if now.month <= 6 else now.year + 1
@@ -284,8 +303,8 @@ k3.markdown(f"""<div class="kpi-card">
     </span>
   </div>
   <div class="{pressure_class}">{pressure.capitalize()}</div>
-  <div class="kpi-sub">OJ futures signal</div>
-  <p style="color:#94a3b8;font-size:.68rem;line-height:1.45;margin-top:.5rem;">Bullish = supply shortage → prices likely to rise. Bearish = oversupply → prices likely to fall. Neutral = near-average supply, no strong signal.</p>
+  <div class="kpi-sub">{"Price model" if price_params else "Rule-based"}</div>
+  <p style="color:#94a3b8;font-size:.68rem;line-height:1.45;margin-top:.5rem;">{"Derived from trained price regression — see Price Forecast section." if price_params else "Bullish = yield >10% below avg. Bearish = >10% above. Neutral = within ±10%."}</p>
 </div>""", unsafe_allow_html=True)
 
 k4.markdown(f"""<div class="kpi-card">
@@ -604,6 +623,91 @@ hint("r (correlation coefficient) ranges from –1 to +1. r near –1 means lowe
 
 gap()
 
+# ── OJ PRICE FORECAST ─────────────────────────────────────────────────────────
+st.markdown('<p class="section-title">OJ Price Forecast</p>', unsafe_allow_html=True)
+
+if price_params:
+    pf_left, pf_mid, pf_right = st.columns([1.5, 2.5, 1.5], gap="medium")
+
+    with pf_left:
+        forecast_year   = price_params["forecast_year"]
+        pred_price      = price_params["predicted_price"]
+        pred_pct        = price_params["predicted_pct_change"]
+        last_year_p     = price_params["last_year"]
+        dir_acc         = price_params["directional_accuracy"]
+        pp_color        = {"bullish": "#22c55e", "bearish": "#ef4444", "neutral": "#f59e0b"}[pressure]
+        pct_color       = "#22c55e" if pred_pct > 0 else "#ef4444"
+        pct_arrow       = "▲" if pred_pct > 0 else "▼"
+        yva_source_lbl  = "Yield model + 2025 NDVI" if price_params.get("forecast_yield_vs_avg_source") == "yield_model" else "Last known yield ratio"
+        st.markdown(f"""<div class="panel-card">
+  <div class="panel-title">💰 {forecast_year} Price Forecast</div>
+  <div class="perf-row"><span class="perf-key">Predicted OJ Price</span><span class="perf-val">¢{pred_price:.0f}/lb</span></div>
+  <div class="perf-row"><span class="perf-key">vs {last_year_p} &nbsp;{pct_arrow}</span><span class="perf-val" style="color:{pct_color}">{pred_pct:+.1f}%</span></div>
+  <div class="perf-row"><span class="perf-key">Price Signal</span><span class="perf-val" style="color:{pp_color}">{pressure.capitalize()}</span></div>
+  <div class="perf-row" style="border:none"><span class="perf-key">Confidence</span><span class="perf-val">{dir_acc:.0%} directional</span></div>
+  <p style="color:#94a3b8;font-size:.7rem;line-height:1.5;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
+    Supply input: {yva_source_lbl} (yield ratio {price_params.get("forecast_yield_vs_avg", "N/A"):.2f}×).
+    Confidence = % of backtest years the model predicted price direction correctly.
+  </p>
+</div>""", unsafe_allow_html=True)
+
+    with pf_mid:
+        st.markdown('<p class="section-title">Price Backtest — Predicted vs Actual OJ Price</p>', unsafe_allow_html=True)
+        fig_pb = go.Figure()
+        fig_pb.add_trace(go.Scatter(
+            x=dataset["year"], y=dataset["avg_oj_price"],
+            mode="lines+markers", name="Actual price",
+            line=dict(color="#f97316", width=2.5),
+            marker=dict(size=6),
+            hovertemplate="<b>%{x}</b><br>Actual: ¢%{y:.1f}/lb<extra></extra>",
+        ))
+        if price_bt is not None and not price_bt.empty:
+            fig_pb.add_trace(go.Scatter(
+                x=price_bt["year"], y=price_bt["predicted_price"],
+                mode="lines+markers", name="Predicted (backtest)",
+                line=dict(color="#2563eb", width=2, dash="dash"),
+                marker=dict(size=7, symbol="diamond"),
+                hovertemplate="<b>%{x}</b><br>Predicted: ¢%{y:.1f}/lb<extra></extra>",
+            ))
+        fig_pb.add_trace(go.Scatter(
+            x=[price_params["forecast_year"]], y=[price_params["predicted_price"]],
+            mode="markers+text",
+            marker=dict(size=13, color="#7c3aed", symbol="star"),
+            text=[f"¢{price_params['predicted_price']:.0f}"],
+            textposition="top right",
+            textfont=dict(color="#7c3aed", size=10),
+            name=f"{price_params['forecast_year']} Forecast",
+            hovertemplate=f"<b>{price_params['forecast_year']} Forecast</b><br>¢{price_params['predicted_price']:.1f}/lb<extra></extra>",
+        ))
+        chart_layout(fig_pb, height=300)
+        fig_pb.update_layout(
+            yaxis_title="OJ Price (¢/lb)", xaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_pb, use_container_width=True, config=CHART_CFG)
+        hint("Orange = actual annual OJ futures prices. Blue dashes = walk-forward backtest predictions (each year trained only on prior years). Purple star = the model's forecast for the next year.")
+
+    with pf_right:
+        r2_col = "#16a34a" if price_params["r2_backtest"] >= 0.6 else ("#d97706" if price_params["r2_backtest"] >= 0.4 else "#dc2626")
+        n_bt   = price_params["n_backtest_years"]
+        n_dir  = round(price_params["directional_accuracy"] * n_bt)
+        st.markdown(f"""<div class="panel-card">
+  <div class="panel-title">📈 Price Model Performance</div>
+  <div class="perf-row"><span class="perf-key">R² (backtest)</span><span class="perf-val" style="color:{r2_col}">{price_params["r2_backtest"]:.2f}</span></div>
+  <div class="perf-row"><span class="perf-key">MAE (backtest)</span><span class="perf-val">¢{price_params["mae_backtest"]:.1f}/lb</span></div>
+  <div class="perf-row"><span class="perf-key">Directional Accuracy</span><span class="perf-val">{price_params["directional_accuracy"]:.0%} &nbsp;({n_dir}/{n_bt})</span></div>
+  <div class="perf-row" style="border:none"><span class="perf-key">Backtest Years</span><span class="perf-val">{n_bt}</span></div>
+  <p style="color:#94a3b8;font-size:.7rem;line-height:1.55;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
+    <b style="color:#64748b;">R²</b> — price variance explained (0=none, 1=perfect).<br>
+    <b style="color:#64748b;">MAE</b> — average absolute error in ¢/lb across test years.<br>
+    <b style="color:#64748b;">Directional</b> — % of years the model correctly predicted whether price went up or down.
+  </p>
+</div>""", unsafe_allow_html=True)
+else:
+    st.info("Run `python src/price_model.py` to enable the price forecast model.")
+
+gap()
+
 # ── BOTTOM ROW: Outlook | Model Perf | Data Sources ───────────────────────────
 b1, b2, b3 = st.columns(3, gap="medium")
 
@@ -619,15 +723,15 @@ with b1:
 
 with b2:
     st.markdown(f"""<div class="panel-card">
-  <div class="panel-title">📊 Model Performance</div>
+  <div class="panel-title">🌾 Yield Model Performance</div>
   <div class="perf-row"><span class="perf-key">R² Score</span><span class="perf-val">{params['r2_train']:.2f}</span></div>
-  <div class="perf-row"><span class="perf-key">MAE</span><span class="perf-val">{params['mae_loo']/1e6:.1f}M boxes</span></div>
-  <div class="perf-row"><span class="perf-key">Accuracy</span><span class="perf-val">{accuracy:.0%}</span></div>
+  <div class="perf-row"><span class="perf-key">MAE (LOO)</span><span class="perf-val">{params['mae_loo']/1e6:.1f}M boxes</span></div>
+  <div class="perf-row"><span class="perf-key">Pressure Accuracy</span><span class="perf-val">{accuracy:.0%}</span></div>
   <div class="perf-row" style="border:none"><span class="perf-key">Backtest Years</span><span class="perf-val">{len(backtest)}</span></div>
   <p style="color:#94a3b8;font-size:.7rem;line-height:1.55;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
-    <b style="color:#64748b;">R²</b> — how much yield variation the model explains (0 = nothing, 1 = perfect fit).<br>
-    <b style="color:#64748b;">MAE</b> — average prediction error in boxes; lower is better.<br>
-    <b style="color:#64748b;">Accuracy</b> — % of years the bullish/bearish/neutral price signal was predicted correctly.
+    <b style="color:#64748b;">R²</b> — yield variance explained by NDVI + year trend.<br>
+    <b style="color:#64748b;">MAE</b> — leave-one-out average error in boxes.<br>
+    <b style="color:#64748b;">Pressure</b> — rule-based Bullish/Bearish accuracy (yield model only; see Price Model above for trained price prediction accuracy).
   </p>
 </div>""", unsafe_allow_html=True)
 
@@ -673,21 +777,33 @@ with st.expander("📖 View Detailed Data & Methodology"):
 
 **Model Methodology**
 
-Starvest uses a linear regression model with two features:
-- **Mean NDVI** — average Normalized Difference Vegetation Index over the Florida citrus belt (Polk, Highlands, DeSoto counties) during the Oct–May growing season. Higher NDVI indicates healthier vegetation.
-- **Year** — captures the long-run decline in Florida citrus production driven by Huanglongbing (HLB / citrus greening disease), which NDVI alone cannot distinguish from weather effects.
+Starvest uses two separate linear regression models chained together:
 
-**Price Pressure Logic**
-- **Bullish** — predicted yield is >10% below historical average → supply shock → upward price pressure on OJ futures.
-- **Bearish** — predicted yield is >10% above historical average → oversupply → downward price pressure.
-- **Neutral** — predicted yield within ±10% of historical average.
+**1. Yield Model** (NDVI + year → boxes harvested)
+- **Mean NDVI** — average Normalized Difference Vegetation Index over 8 Florida citrus counties during the Oct–May growing season. Higher NDVI indicates healthier vegetation.
+- **Year** — captures the long-run decline driven by Huanglongbing (HLB / citrus greening disease), which NDVI alone cannot distinguish from weather effects.
+
+**2. Price Model** (yield_vs_avg + lagged_price → OJ futures price)
+- **yield_vs_avg** — this season's predicted yield divided by the long-run historical average. Values below 1.0 signal a supply shortage; the model learned a strongly negative coefficient here.
+- **lagged_price** — prior year's average OJ futures price, capturing price momentum and mean-reversion dynamics.
+- The model is trained on all available data and backtested walk-forward. The coefficient on yield_vs_avg is approximately –100 ¢/lb per unit of yield ratio, meaning a 50% supply shortfall drives roughly +50 ¢/lb in expected price.
+
+**Price Signal (Bullish / Bearish / Neutral)**
+Derived from the price model's predicted % change vs the prior year:
+- **Bullish** — model predicts price will rise more than +5% → buy/long signal for OJ futures.
+- **Bearish** — model predicts price will fall more than –5% → sell/short signal.
+- **Neutral** — predicted change within ±5%.
 
 **Backtest**
-Walk-forward validation: for each year, the model is trained only on prior years and never sees future data. This gives an honest estimate of out-of-sample accuracy.
+Both models use walk-forward validation: each year is predicted using only data from prior years, never future data. The price model additionally requires at least 4 training years before making its first out-of-sample prediction.
+
+**2025 Forecast Pipeline**
+NDVI (Oct 2024–May 2025) → Yield Model → predicted 2025 yield_vs_avg → Price Model + 2024 actual price → predicted 2025 OJ price.
 
 **Limitations**
-- Small dataset (9 years of annual observations). Accuracy will improve as more data accumulates.
-- NDVI doesn't directly measure HLB infection severity — the year trend is a proxy, not a mechanistic variable.
-- OJ futures are influenced by factors beyond Florida supply (Brazil production, weather, macroeconomics).
+- Small dataset (~10 years of annual data). Results are directionally informative, not investment-grade.
+- The year trend in the yield model extrapolates the HLB disease decline, which may be leveling off in reality — resulting in an aggressive low yield_vs_avg for 2025.
+- OJ futures are influenced by factors beyond Florida supply (Brazil production, weather, macroeconomics, currency).
+- The 2023 price spike following Hurricane Ian was a black swan event the model could not anticipate.
 """)
 

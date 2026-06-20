@@ -93,6 +93,17 @@ def get_forecast(year: int):
     }
 
 
+@app.get("/api/price-forecast")
+def get_price_forecast():
+    return load_json(PROCESSED / "price_model_params.json")
+
+
+@app.get("/api/price-backtest")
+def get_price_backtest():
+    df = load_csv(PROCESSED / "price_backtest_results.csv")
+    return df.to_dict(orient="records")
+
+
 @app.get("/api/summary")
 def get_summary():
     dataset = load_csv(PROCESSED / "dataset.csv")
