@@ -1,5 +1,7 @@
 import base64
+import certifi
 import json
+import ssl
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -133,8 +135,9 @@ def load_ndvi_raw():
 @st.cache_data(ttl=86400)
 def load_florida_counties():
     try:
+        ctx = ssl.create_default_context(cafile=certifi.where())
         url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
-        with urllib.request.urlopen(url, timeout=12) as r:
+        with urllib.request.urlopen(url, timeout=15, context=ctx) as r:
             data = json.loads(r.read())
         fl = {"type": "FeatureCollection",
               "features": [f for f in data["features"] if f["id"].startswith("12")]}
