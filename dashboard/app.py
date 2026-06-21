@@ -168,6 +168,13 @@ def load_county_seasonal():
     return None
 
 @st.cache_data
+def load_county_dataset():
+    path = DATA / "county_dataset.csv"
+    if path.exists():
+        return pd.read_csv(path)
+    return None
+
+@st.cache_data
 def load_price_model_params():
     path = DATA / "price_model_params.json"
     if not path.exists():
@@ -229,16 +236,12 @@ def hint(text: str):
     )
 
 def ndvi_fill_rgba(val: float, alpha: float = 0.45) -> str:
-    stops = [(0.0,(239,68,68)),(0.3,(249,115,22)),(0.5,(234,179,8)),(1.0,(34,197,94))]
-    for i in range(len(stops) - 1):
-        v0, c0 = stops[i]; v1, c1 = stops[i + 1]
-        if val <= v1 or i == len(stops) - 2:
-            t = max(0.0, min(1.0, (val - v0) / (v1 - v0) if v1 > v0 else 0.0))
-            r = int(c0[0] + t * (c1[0] - c0[0]))
-            g = int(c0[1] + t * (c1[1] - c0[1]))
-            b = int(c0[2] + t * (c1[2] - c0[2]))
-            return f"rgba({r},{g},{b},{alpha})"
-    return f"rgba(34,197,94,{alpha})"
+    if val >= 0.6:
+        return f"rgba(34,197,94,{alpha})"    # green — healthy
+    elif val >= 0.4:
+        return f"rgba(234,179,8,{alpha})"    # yellow — moderate
+    else:
+        return f"rgba(239,68,68,{alpha})"    # red — stressed
 
 def chart_layout(fig, height=300):
     fig.update_layout(
@@ -333,14 +336,24 @@ c_map, c_ndvi = st.columns(2, gap="medium")
 with c_map:
     st.markdown('<p class="section-title">Florida Citrus Belt</p>', unsafe_allow_html=True)
 
-    ALL_CITRUS_FIPS = {"12105","12055","12027","12049","12051","12015","12043","12081"}
+    ALL_CITRUS_FIPS  = {"12105","12055","12027","12049","12051","12015","12043","12081"}
     fl_counties      = load_florida_counties()
     county_seasonal  = load_county_seasonal()
+    county_dataset   = load_county_dataset()
 
     # Default NDVI value (regional average from latest dataset row)
     ndvi_val  = float(latest["mean_ndvi"])
     year_data = None
     sel_year  = None
+
+    # ── Map layer toggle ──────────────────────────────────────────────────────
+    map_view = st.radio(
+        "Map Layer",
+        ["Vegetation Index", "Citrus Output"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="map_layer_view",
+    )
 
     # ── Year slider (only shown when per-county data is available) ────────────
     if county_seasonal is not None:
@@ -380,31 +393,54 @@ with c_map:
             hoverinfo="skip", showlegend=False,
         ))
 
-    # Per-county NDVI choropleth
-    if fl_counties and year_data is not None and not year_data.empty:
+    # Per-county choropleth — Vegetation Index or Citrus Output
+    if fl_counties:
         citrus_features = [f for f in fl_counties["features"] if f["id"] in ALL_CITRUS_FIPS]
         citrus_geo      = {"type": "FeatureCollection", "features": citrus_features}
-        z_vals = year_data["mean_ndvi"].tolist()
-        z_min  = max(0.0, min(z_vals) - 0.05)
-        z_max  = min(1.0, max(z_vals) + 0.05)
-        fig_map.add_trace(go.Choroplethmapbox(
-            geojson=citrus_geo,
-            locations=year_data["geoid"].astype(str).tolist(),
-            z=z_vals,
-            text=year_data["county"].tolist(),
-            featureidkey="id",
-            colorscale=[[0,"#ef4444"],[0.3,"#f97316"],[0.5,"#eab308"],[1.0,"#22c55e"]],
-            zmin=z_min, zmax=z_max,
-            showscale=False,
-            marker_opacity=0.72,
-            marker_line_width=1.8,
-            marker_line_color="#f97316",
-            hovertemplate="<b>%{text} County</b><br>NDVI: %{z:.4f}<extra></extra>",
-        ))
-    else:
-        # Fallback rectangle until per-county data is fetched
-        ndvi_fill = ndvi_fill_rgba(ndvi_val)
-        if fl_counties:
+
+        if map_view == "Citrus Output" and county_dataset is not None and sel_year is not None:
+            yield_year = county_dataset[county_dataset["year"] == sel_year].copy()
+            yield_year["geoid"] = yield_year["geoid"].astype(str)
+            yield_year = yield_year[yield_year["geoid"].isin(ALL_CITRUS_FIPS)]
+            if not yield_year.empty:
+                z_yield = yield_year["county_yield_est"].tolist()
+                fig_map.add_trace(go.Choroplethmapbox(
+                    geojson=citrus_geo,
+                    locations=yield_year["geoid"].tolist(),
+                    z=z_yield,
+                    text=yield_year["county"].tolist(),
+                    featureidkey="id",
+                    colorscale=[[0, "#dbeafe"], [1.0, "#1e40af"]],
+                    zmin=0, zmax=max(z_yield),
+                    showscale=False,
+                    marker_opacity=0.78,
+                    marker_line_width=1.8,
+                    marker_line_color="#2563eb",
+                    hovertemplate="<b>%{text} County</b><br>Est. Yield: %{z:,.0f} boxes<extra></extra>",
+                ))
+        elif year_data is not None and not year_data.empty:
+            z_vals = year_data["mean_ndvi"].tolist()
+            fig_map.add_trace(go.Choroplethmapbox(
+                geojson=citrus_geo,
+                locations=year_data["geoid"].astype(str).tolist(),
+                z=z_vals,
+                text=year_data["county"].tolist(),
+                featureidkey="id",
+                colorscale=[
+                    [0.0,  "#ef4444"], [0.39, "#ef4444"],
+                    [0.40, "#eab308"], [0.59, "#eab308"],
+                    [0.60, "#22c55e"], [1.0,  "#22c55e"],
+                ],
+                zmin=0.0, zmax=1.0,
+                showscale=False,
+                marker_opacity=0.72,
+                marker_line_width=1.8,
+                marker_line_color="#f97316",
+                hovertemplate="<b>%{text} County</b><br>NDVI: %{z:.4f}<extra></extra>",
+            ))
+        else:
+            # Fallback rectangle until per-county data is fetched
+            ndvi_fill = ndvi_fill_rgba(ndvi_val)
             citrus_geo2 = {"type": "FeatureCollection",
                            "features": [f for f in fl_counties["features"]
                                         if f["id"] in ALL_CITRUS_FIPS]}
@@ -414,24 +450,34 @@ with c_map:
                 line=dict(color="#f97316", width=2.2),
                 hoverinfo="skip", showlegend=False,
             ))
-        fig_map.add_trace(go.Scattermapbox(
-            lat=[27.0, 28.2, 28.2, 27.0, 27.0],
-            lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
-            mode="lines", fill="toself",
-            fillcolor=ndvi_fill, line=dict(color="rgba(0,0,0,0)", width=0),
-            name="Citrus Belt",
-            hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
-        ))
+            fig_map.add_trace(go.Scattermapbox(
+                lat=[27.0, 28.2, 28.2, 27.0, 27.0],
+                lon=[-82.0, -82.0, -81.0, -81.0, -82.0],
+                mode="lines", fill="toself",
+                fillcolor=ndvi_fill, line=dict(color="rgba(0,0,0,0)", width=0),
+                name="Citrus Belt",
+                hovertemplate=f"NDVI: {ndvi_val:.4f}<extra></extra>",
+            ))
 
     # Regional average label
     label_suffix = f" ({sel_year})" if sel_year else ""
+    if map_view == "Citrus Output" and county_dataset is not None and sel_year is not None:
+        yield_year_lbl = county_dataset[county_dataset["year"] == sel_year]
+        total_yield_lbl = yield_year_lbl["county_yield_est"].sum() if not yield_year_lbl.empty else 0
+        map_label     = f"Est. {total_yield_lbl/1e6:.1f}M boxes{label_suffix}"
+        map_hover     = f"Estimated citrus yield: {total_yield_lbl:,.0f} boxes<extra></extra>"
+        dot_color     = "#2563eb"
+    else:
+        map_label = f"Avg NDVI {ndvi_val:.3f}{label_suffix}"
+        map_hover = f"Regional avg NDVI: {ndvi_val:.4f}<extra></extra>"
+        dot_color = "#f97316"
     fig_map.add_trace(go.Scattermapbox(
         lat=[27.55], lon=[-81.5], mode="markers+text",
-        marker=dict(size=13, color="#f97316"),
-        text=[f"Avg NDVI {ndvi_val:.3f}{label_suffix}"],
+        marker=dict(size=13, color=dot_color),
+        text=[map_label],
         textposition="top right",
         textfont=dict(color="#ffffff", size=11),
-        hovertemplate=f"Regional avg NDVI: {ndvi_val:.4f}<extra></extra>",
+        hovertemplate=map_hover,
     ))
 
     fig_map.update_layout(
@@ -453,8 +499,8 @@ with c_map:
 
     # NDVI gradient legend
     ndvi_pct = min(ndvi_val * 100, 100)
-    ndvi_status = "Healthy" if ndvi_val >= 0.5 else ("Moderate" if ndvi_val >= 0.3 else "Stressed")
-    ndvi_status_color = "#22c55e" if ndvi_val >= 0.5 else ("#eab308" if ndvi_val >= 0.3 else "#ef4444")
+    ndvi_status = "Healthy" if ndvi_val >= 0.6 else ("Moderate" if ndvi_val >= 0.4 else "Stressed")
+    ndvi_status_color = "#22c55e" if ndvi_val >= 0.6 else ("#eab308" if ndvi_val >= 0.4 else "#ef4444")
     st.markdown(f"""
 <div style="margin-top:.4rem;padding:.5rem .1rem 0;">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.3rem;">
@@ -462,14 +508,14 @@ with c_map:
     <span style="color:{ndvi_status_color};font-size:.7rem;font-weight:600;">{ndvi_status} &nbsp;({ndvi_val:.4f})</span>
   </div>
   <div style="position:relative;height:7px;border-radius:4px;
-              background:linear-gradient(to right,#ef4444 0%,#f97316 30%,#eab308 50%,#22c55e 100%);">
+              background:linear-gradient(to right,#ef4444 0%,#ef4444 39%,#eab308 40%,#eab308 59%,#22c55e 60%,#22c55e 100%);">
     <div style="position:absolute;top:-4px;left:{ndvi_pct:.1f}%;width:3px;height:15px;
                 background:#0f172a;border-radius:2px;transform:translateX(-50%);"></div>
   </div>
   <div style="display:flex;justify-content:space-between;margin-top:.25rem;">
-    <span style="color:#ef4444;font-size:.65rem;">Stressed (&lt;0.3)</span>
-    <span style="color:#eab308;font-size:.65rem;">Moderate (0.3–0.5)</span>
-    <span style="color:#22c55e;font-size:.65rem;">Healthy (&gt;0.5)</span>
+    <span style="color:#ef4444;font-size:.65rem;">Stressed (&lt;0.4)</span>
+    <span style="color:#eab308;font-size:.65rem;">Moderate (0.4–0.6)</span>
+    <span style="color:#22c55e;font-size:.65rem;">Healthy (&ge;0.6)</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -489,7 +535,75 @@ with c_ndvi:
     chart_layout(fig_ndvi, height=420)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
     st.plotly_chart(fig_ndvi, use_container_width=True, config=CHART_CFG)
-    hint("NDVI (Normalized Difference Vegetation Index) measures plant greenness from satellite data. Values above 0.5 indicate healthy, dense vegetation; below 0.3 signals stressed or sparse crops. Each data point is a 16-day average over the Florida citrus belt.")
+    hint("NDVI (Normalized Difference Vegetation Index) measures plant greenness from satellite data. Values ≥ 0.6 indicate healthy, dense vegetation; 0.4–0.6 = moderate health; below 0.4 signals stressed or sparse crops. Each data point is a 16-day average over the Florida citrus belt.")
+
+gap()
+# ── NDVI vs Yield Correlation (county-level) ──────────────────────────────────
+st.markdown('<p class="section-title">County NDVI vs. Estimated Yield</p>', unsafe_allow_html=True)
+_cdf = load_county_dataset()
+if _cdf is not None:
+    _cdf_clean = _cdf.dropna(subset=["mean_ndvi", "county_yield_est"])
+    _cx  = _cdf_clean["mean_ndvi"].values
+    _cy  = _cdf_clean["county_yield_est"].values
+    _cyr = _cdf_clean["year"].values.astype(int)
+    _cm, _cb = np.polyfit(_cx, _cy, 1)
+    _cx_line = np.linspace(_cx.min(), _cx.max(), 50)
+    _cy_line = _cm * _cx_line + _cb
+    _cr = float(np.corrcoef(_cx, _cy)[0, 1])
+
+    c_ns, c_ns_info = st.columns([2.5, 1], gap="medium")
+    with c_ns:
+        fig_ns = go.Figure()
+        fig_ns.add_trace(go.Scatter(
+            x=_cx, y=_cy,
+            mode="markers",
+            text=[f"{c} {y}" for c, y in zip(_cdf_clean["county"].tolist(), _cyr.tolist())],
+            marker=dict(
+                size=9,
+                color=_cyr,
+                colorscale="Oranges",
+                showscale=True,
+                colorbar=dict(title="Year", thickness=10, len=0.7),
+                line=dict(color="#0f172a", width=0.6),
+                opacity=0.8,
+            ),
+            hovertemplate="<b>%{text}</b><br>NDVI: %{x:.4f}<br>Yield: %{y:,.0f} boxes<extra></extra>",
+            name="County-year",
+        ))
+        fig_ns.add_trace(go.Scatter(
+            x=_cx_line, y=_cy_line,
+            mode="lines",
+            line=dict(color="#ef4444", width=1.8, dash="dash"),
+            name="Trend",
+            hoverinfo="skip",
+        ))
+        fig_ns.add_annotation(
+            x=_cx.max(), y=_cy_line[-1],
+            text=f"r = {_cr:+.3f}",
+            showarrow=False, xanchor="right",
+            font=dict(size=12, color="#2563eb"),
+        )
+        chart_layout(fig_ns, height=300)
+        fig_ns.update_layout(
+            xaxis_title="County Mean NDVI (growing season)",
+            yaxis_title="County Est. Yield (boxes)",
+            showlegend=False,
+        )
+        st.plotly_chart(fig_ns, use_container_width=True, config=CHART_CFG)
+        hint("Each point is one county for one year. NDVI is the growing-season average; yield is the county's USDA-proportioned estimate. The trend line shows the within-season NDVI-to-yield relationship across all counties and years.")
+    with c_ns_info:
+        _cr_color = "#16a34a" if abs(_cr) >= 0.6 else ("#d97706" if abs(_cr) >= 0.4 else "#dc2626")
+        _cr_lbl = "higher NDVI → higher yield" if _cr > 0 else "higher NDVI → lower yield"
+        st.markdown(f"""<div class="panel-card" style="margin-top:.1rem;">
+  <div class="panel-title">🌿 NDVI–Yield Correlation</div>
+  <div class="perf-row"><span class="perf-key">r (Pearson)</span><span class="perf-val" style="color:{_cr_color}">{_cr:+.3f}</span></div>
+  <div class="perf-row"><span class="perf-key">County-years</span><span class="perf-val">{len(_cdf_clean)}</span></div>
+  <div class="perf-row" style="border:none"><span class="perf-key">Strength</span><span class="perf-val">{abs(_cr):.0%}</span></div>
+  <p style="color:#94a3b8;font-size:.7rem;line-height:1.55;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
+    {_cr_lbl.capitalize()}.<br>
+    <b style="color:#64748b;">r &gt; 0.6</b> = strong positive link between vegetation health and output.
+  </p>
+</div>""", unsafe_allow_html=True)
 
 gap()
 # ── ROW 2: Yield + Backtest ───────────────────────────────────────────────────
@@ -499,14 +613,43 @@ with c_yield:
     st.markdown('<p class="section-title">Yield vs Historical Average</p>', unsafe_allow_html=True)
     colors = ["#f97316" if y < params["historical_avg_yield"] else "#38bdf8" for y in dataset["yield_boxes"]]
     fig_yield = go.Figure()
-    fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Yield",
-                      hovertemplate="<b>%{x}</b><br>Yield: %{y:,.0f} boxes<extra></extra>")
+    fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Actual",
+                      hovertemplate="<b>%{x}</b><br>Actual Yield: %{y:,.0f} boxes<extra></extra>")
+
+    # Predicted 2025 bar (model forecast — no official USDA data yet)
+    if price_params and price_params.get("forecast_ndvi") is not None:
+        _pred_ndvi_2025 = price_params["forecast_ndvi"]
+        _pred_yield_2025 = (
+            params["intercept"]
+            + params["coef_ndvi"] * _pred_ndvi_2025
+            + params["coef_year"] * 2025
+        )
+        fig_yield.add_bar(
+            x=[2025], y=[_pred_yield_2025],
+            marker_color="#7c3aed",
+            marker_line_color="#5b21b6",
+            marker_line_width=2,
+            marker_pattern_shape="/",
+            name="Predicted",
+            hovertemplate="<b>2025 (Predicted)</b><br>Forecast Yield: %{y:,.0f} boxes<extra></extra>",
+        )
+        fig_yield.add_annotation(
+            x=2025, y=_pred_yield_2025,
+            text="Predicted",
+            showarrow=False, yanchor="bottom",
+            font=dict(size=9, color="#5b21b6"),
+        )
+
     fig_yield.add_hline(y=params["historical_avg_yield"], line_dash="dash", line_color="#94a3b8",
                         annotation_text="Hist. Avg", annotation_font_color="#64748b")
     chart_layout(fig_yield)
-    fig_yield.update_layout(yaxis_title="Boxes", xaxis_title="")
+    fig_yield.update_layout(
+        yaxis_title="Boxes", xaxis_title="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        barmode="overlay",
+    )
     st.plotly_chart(fig_yield, use_container_width=True, config=CHART_CFG)
-    hint("Orange bars = yield fell below the long-run historical average (potential supply shortage). Blue bars = yield exceeded the average (abundant crop). The dashed line is the average across all years in the dataset.")
+    hint("Orange/blue bars = Actual USDA yield (orange = below historical avg, blue = above). Purple hatched bar = model-predicted yield for 2025 (no official USDA data published yet). Dashed line = long-run historical average.")
 
 with c_bt:
     st.markdown('<p class="section-title">Backtest — Predicted vs Actual Yield</p>', unsafe_allow_html=True)
@@ -516,13 +659,33 @@ with c_bt:
                        line=dict(color="#f97316", width=2), marker=dict(size=6),
                        hovertemplate="<b>%{x}</b><br>Actual: %{y:,.0f} boxes<extra></extra>")
     fig_bt.add_scatter(x=backtest["year"], y=backtest["predicted_yield"],
-                       mode="lines+markers", name="Predicted",
+                       mode="lines+markers", name="Predicted (backtest)",
                        line=dict(color="#38bdf8", width=2, dash="dash"), marker=dict(size=6),
                        hovertemplate="<b>%{x}</b><br>Predicted: %{y:,.0f} boxes<extra></extra>")
+    if price_params and price_params.get("forecast_ndvi") is not None:
+        _pred_ndvi_2025_bt = price_params["forecast_ndvi"]
+        _pred_yield_2025_bt = (
+            params["intercept"]
+            + params["coef_ndvi"] * _pred_ndvi_2025_bt
+            + params["coef_year"] * 2025
+        )
+        fig_bt.add_scatter(
+            x=[2025], y=[_pred_yield_2025_bt],
+            mode="markers+text",
+            marker=dict(size=14, color="#7c3aed", symbol="star"),
+            text=["2025 Forecast"],
+            textposition="top right",
+            textfont=dict(color="#7c3aed", size=9),
+            name="2025 Forecast",
+            hovertemplate=f"<b>2025 Forecast</b><br>Predicted: {_pred_yield_2025_bt:,.0f} boxes<extra></extra>",
+        )
     chart_layout(fig_bt)
-    fig_bt.update_layout(yaxis_title="Boxes", xaxis_title="")
+    fig_bt.update_layout(
+        yaxis_title="Boxes", xaxis_title="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
     st.plotly_chart(fig_bt, use_container_width=True, config=CHART_CFG)
-    hint("A backtest checks how well the model would have predicted years it had never seen — trained only on earlier data each time, mimicking a real forecast. The closer the orange and blue lines, the more trustworthy the model's predictions.")
+    hint("Orange = actual USDA yield per year. Blue dashes = walk-forward backtest predictions (each year trained only on prior years). Purple star = model's 2025 forecast (labeled 'Predicted' — no USDA data published yet).")
 
 gap()
 
@@ -638,16 +801,24 @@ if price_params:
         pp_color        = {"bullish": "#22c55e", "bearish": "#ef4444", "neutral": "#f59e0b"}[pressure]
         pct_color       = "#22c55e" if pred_pct > 0 else "#ef4444"
         pct_arrow       = "▲" if pred_pct > 0 else "▼"
-        yva_source_lbl  = "Yield model + 2025 NDVI" if price_params.get("forecast_yield_vs_avg_source") == "yield_model" else "Last known yield ratio"
+        _src = price_params.get("forecast_yield_vs_avg_source", "")
+        if _src == "yield_model_county":
+            yva_source_lbl = "County yield model + NDVI"
+        elif _src == "yield_model":
+            yva_source_lbl = "Yield model + NDVI"
+        else:
+            yva_source_lbl = "Last known yield ratio"
+        pred_price_dlr = pred_price / 100
         st.markdown(f"""<div class="panel-card">
   <div class="panel-title">💰 {forecast_year} Price Forecast</div>
-  <div class="perf-row"><span class="perf-key">Predicted OJ Price</span><span class="perf-val">¢{pred_price:.0f}/lb</span></div>
+  <div class="perf-row"><span class="perf-key">Predicted OJ Price</span><span class="perf-val">¢{pred_price:.1f}/lb</span></div>
+  <div class="perf-row"><span class="perf-key">&nbsp;</span><span class="perf-val" style="color:#94a3b8;font-size:.78rem;">(≈ ${pred_price_dlr:.2f}/lb)</span></div>
   <div class="perf-row"><span class="perf-key">vs {last_year_p} &nbsp;{pct_arrow}</span><span class="perf-val" style="color:{pct_color}">{pred_pct:+.1f}%</span></div>
   <div class="perf-row"><span class="perf-key">Price Signal</span><span class="perf-val" style="color:{pp_color}">{pressure.capitalize()}</span></div>
   <div class="perf-row" style="border:none"><span class="perf-key">Confidence</span><span class="perf-val">{dir_acc:.0%} directional</span></div>
   <p style="color:#94a3b8;font-size:.7rem;line-height:1.5;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
-    Supply input: {yva_source_lbl} (yield ratio {price_params.get("forecast_yield_vs_avg", "N/A"):.2f}×).
-    Confidence = % of backtest years the model predicted price direction correctly.
+    Supply input: {yva_source_lbl} (yield ratio {price_params.get("forecast_yield_vs_avg", 0):.2f}×).
+    OJ futures are quoted in ¢/lb. Confidence = % of backtest years the model correctly predicted price direction.
   </p>
 </div>""", unsafe_allow_html=True)
 
