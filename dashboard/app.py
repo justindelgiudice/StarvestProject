@@ -370,7 +370,6 @@ with c_map:
             sel_year = st.select_slider(
                 "Year",
                 options=available_years,
-                value=st.session_state.get("ndvi_map_year", max(available_years)),
                 key="ndvi_map_year",
             )
 
@@ -616,14 +615,12 @@ with c_yield:
     fig_yield.add_bar(x=dataset["year"], y=dataset["yield_boxes"], marker_color=colors, name="Actual",
                       hovertemplate="<b>%{x}</b><br>Actual Yield: %{y:,.0f} boxes<extra></extra>")
 
-    # Predicted 2025 bar (model forecast — no official USDA data yet)
-    if price_params and price_params.get("forecast_ndvi") is not None:
-        _pred_ndvi_2025 = price_params["forecast_ndvi"]
-        _pred_yield_2025 = (
-            params["intercept"]
-            + params["coef_ndvi"] * _pred_ndvi_2025
-            + params["coef_year"] * 2025
-        )
+    # Predicted 2025 bar (model forecast — no official USDA data yet).
+    # Use forecast_yield_vs_avg × historical_avg (already computed correctly by price_model.py
+    # via per-county NDVI aggregation + coverage-fraction scaling).
+    # DO NOT apply county coefficients directly here — they predict per-county yield, not statewide.
+    if price_params and price_params.get("forecast_yield_vs_avg") is not None:
+        _pred_yield_2025 = price_params["forecast_yield_vs_avg"] * params["historical_avg_yield"]
         fig_yield.add_bar(
             x=[2025], y=[_pred_yield_2025],
             marker_color="#7c3aed",
@@ -662,13 +659,8 @@ with c_bt:
                        mode="lines+markers", name="Predicted (backtest)",
                        line=dict(color="#38bdf8", width=2, dash="dash"), marker=dict(size=6),
                        hovertemplate="<b>%{x}</b><br>Predicted: %{y:,.0f} boxes<extra></extra>")
-    if price_params and price_params.get("forecast_ndvi") is not None:
-        _pred_ndvi_2025_bt = price_params["forecast_ndvi"]
-        _pred_yield_2025_bt = (
-            params["intercept"]
-            + params["coef_ndvi"] * _pred_ndvi_2025_bt
-            + params["coef_year"] * 2025
-        )
+    if price_params and price_params.get("forecast_yield_vs_avg") is not None:
+        _pred_yield_2025_bt = price_params["forecast_yield_vs_avg"] * params["historical_avg_yield"]
         fig_bt.add_scatter(
             x=[2025], y=[_pred_yield_2025_bt],
             mode="markers+text",
