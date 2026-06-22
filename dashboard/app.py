@@ -391,6 +391,7 @@ with c_map:
 
     # ── Build map figure ──────────────────────────────────────────────────────
     fig_map = go.Figure()
+    _z_max = 1.0  # overwritten inside Citrus Output block; kept in scope for the legend
 
     if fl_counties:
         citrus_features = [f for f in fl_counties["features"] if f["id"] in ALL_CITRUS_FIPS]
@@ -546,11 +547,31 @@ with c_map:
     )
     st.plotly_chart(fig_map, use_container_width=True, config=CHART_CFG)
 
-    # NDVI gradient legend
-    ndvi_pct = min(ndvi_val * 100, 100)
-    ndvi_status = "Healthy" if ndvi_val >= 0.6 else ("Moderate" if ndvi_val >= 0.4 else "Stressed")
-    ndvi_status_color = "#22c55e" if ndvi_val >= 0.6 else ("#eab308" if ndvi_val >= 0.4 else "#ef4444")
-    st.markdown(f"""
+    # Legend switches with the map toggle
+    if map_view == "Citrus Output":
+        _legend_yr = min(sel_year, int(county_dataset["year"].max())) if (sel_year is not None and county_dataset is not None) else ""
+        _yr_lbl = f" — {_legend_yr} USDA estimates" if _legend_yr else ""
+        st.markdown(f"""
+<div style="margin-top:.4rem;padding:.5rem .1rem 0;">
+  <div style="margin-bottom:.45rem;">
+    <span style="color:#64748b;font-size:.7rem;font-weight:500;">Citrus Yield by County{_yr_lbl}</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
+    <div style="width:22px;height:9px;background:#9ca3af;border-radius:2px;flex-shrink:0;"></div>
+    <span style="color:#64748b;font-size:.67rem;">No citrus production recorded (59 of 67 FL counties)</span>
+  </div>
+  <div style="height:7px;border-radius:4px;background:linear-gradient(to right,#bfdbfe,#1e40af);"></div>
+  <div style="display:flex;justify-content:space-between;margin-top:.25rem;">
+    <span style="color:#64748b;font-size:.65rem;">Low yield (0 boxes)</span>
+    <span style="color:#1e40af;font-size:.65rem;">High yield ({_z_max/1e6:.1f}M boxes)</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        ndvi_pct = min(ndvi_val * 100, 100)
+        ndvi_status = "Healthy" if ndvi_val >= 0.6 else ("Moderate" if ndvi_val >= 0.4 else "Stressed")
+        ndvi_status_color = "#22c55e" if ndvi_val >= 0.6 else ("#eab308" if ndvi_val >= 0.4 else "#ef4444")
+        st.markdown(f"""
 <div style="margin-top:.4rem;padding:.5rem .1rem 0;">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.3rem;">
     <span style="color:#64748b;font-size:.7rem;font-weight:500;">NDVI Health Scale</span>
