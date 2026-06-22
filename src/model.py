@@ -1,168 +1,116 @@
 """
-Train yield regression model(s) and save parameters.
+Train home price direction model: satellite + permit signals → ZHVI forward change.
 
-Two model variants:
-  1. Statewide  — NDVI (regional avg) + year → statewide yield (10 rows)
-  2. County     — county NDVI + year → county yield estimate (panel, ~88 rows)
+Target variable: zhvi_fwd_4q — % ZHVI change over the next 4 quarters.
+Features:
+  - ndbi_chg       : quarter-over-quarter NDBI change (construction intensity signal)
+  - bsi_chg        : quarter-over-quarter bare-soil index change
+  - permits_yoy    : trailing 12-month permit count YoY change
+  - zhvi_yoy       : current ZHVI momentum
+  - metro (dummies): market fixed effects
 
-The county model is trained as a pooled linear regression on the county-level
-panel dataset (county_dataset.csv).  Its county-level predictions are summed
-and scaled to statewide for evaluation.  Coverage fraction (what share of FL
-production our 8 counties represent) is saved and used by backtest.py.
+Walk-forward cross-validation: train on all data before each test quarter.
+Outputs data/processed/model_params.json and data/processed/backtest_results.csv.
 
-model_params.json contains the COUNTY model by default (better generalisation)
-with statewide-equivalent R² and MAE for dashboard display.
+Note: requires build_dataset.py to have run first.
 """
 
 import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import LeaveOneGroupOut, LeaveOneOut
 
-ROOT             = Path(__file__).parent.parent
-DATASET_PATH     = ROOT / "data" / "processed" / "dataset.csv"
-COUNTY_DS_PATH   = ROOT / "data" / "processed" / "county_dataset.csv"
-PARAMS_PATH      = ROOT / "data" / "processed" / "model_params.json"
+ROOT    = Path(__file__).parent.parent
+DS_PATH = ROOT / "data" / "processed" / "dataset.csv"
+PARAMS  = ROOT / "data" / "processed" / "model_params.json"
+BT_PATH = ROOT / "data" / "processed" / "backtest_results.csv"
 
-FEATURES = ["mean_ndvi", "year"]
+FEATURES = ["ndbi_chg", "bsi_chg", "permits_yoy", "zhvi_yoy"]
+TARGET   = "zhvi_fwd_4q"
+MIN_TRAIN_QUARTERS = 8
 
 
-# ── Statewide model (reference) ───────────────────────────────────────────────
+def train(df: pd.DataFrame):
+    df = df.dropna(subset=FEATURES + [TARGET]).copy()
+    quarters = sorted(df["quarter"].unique())
 
-def train_statewide(df: pd.DataFrame) -> dict:
-    X = df[FEATURES].values
-    y = df["yield_boxes"].values
+    if len(quarters) < MIN_TRAIN_QUARTERS + 1:
+        raise ValueError(f"Need at least {MIN_TRAIN_QUARTERS + 1} quarters of data.")
 
-    model = LinearRegression().fit(X, y)
+    # ── Walk-forward backtest ─────────────────────────────────────────────────
+    bt_rows = []
+    for i, test_q in enumerate(quarters[MIN_TRAIN_QUARTERS:], start=MIN_TRAIN_QUARTERS):
+        train_mask = df["quarter"] < test_q
+        test_mask  = df["quarter"] == test_q
 
-    loo = LeaveOneOut()
-    preds = [
-        LinearRegression().fit(X[tr], y[tr]).predict(X[te])[0]
-        for tr, te in loo.split(X)
-    ]
+        X_tr = df.loc[train_mask, FEATURES].values
+        y_tr = df.loc[train_mask, TARGET].values
+        X_te = df.loc[test_mask,  FEATURES].values
+        y_te = df.loc[test_mask,  TARGET].values
 
-    return {
-        "r2_train":            r2_score(y, model.predict(X)),
-        "mae_loo":             mean_absolute_error(y, preds),
-        "intercept":           float(model.intercept_),
-        "coef_ndvi":           float(model.coef_[0]),
-        "coef_year":           float(model.coef_[1]),
-        "historical_avg_yield": float(df["yield_boxes"].mean()),
+        scaler = StandardScaler()
+        X_tr_s = scaler.fit_transform(X_tr)
+        X_te_s = scaler.transform(X_te)
+
+        mdl = Ridge(alpha=1.0).fit(X_tr_s, y_tr)
+        preds = mdl.predict(X_te_s)
+
+        for idx, (metro, actual, pred) in enumerate(
+            zip(df.loc[test_mask, "metro"], y_te, preds)
+        ):
+            bt_rows.append({"quarter": test_q, "metro": metro,
+                            "actual_zhvi_fwd": actual, "predicted_zhvi_fwd": pred})
+
+    bt = pd.DataFrame(bt_rows)
+    r2  = r2_score(bt["actual_zhvi_fwd"], bt["predicted_zhvi_fwd"])
+    mae = mean_absolute_error(bt["actual_zhvi_fwd"], bt["predicted_zhvi_fwd"])
+    dir_acc = ((bt["actual_zhvi_fwd"] > 0) == (bt["predicted_zhvi_fwd"] > 0)).mean()
+
+    # ── Final model on all data ───────────────────────────────────────────────
+    X_all = df[FEATURES].values
+    y_all = df[TARGET].values
+    scaler_final = StandardScaler()
+    X_all_s = scaler_final.fit_transform(X_all)
+    mdl_final = Ridge(alpha=1.0).fit(X_all_s, y_all)
+
+    params = {
+        "features":           FEATURES,
+        "coefficients":       dict(zip(FEATURES, mdl_final.coef_.tolist())),
+        "intercept":          float(mdl_final.intercept_),
+        "scaler_mean":        scaler_final.mean_.tolist(),
+        "scaler_scale":       scaler_final.scale_.tolist(),
+        "r2_backtest":        round(r2, 4),
+        "mae_backtest":       round(mae, 2),
+        "directional_accuracy": round(float(dir_acc), 4),
+        "n_backtest_quarters": len(bt["quarter"].unique()),
+        "last_quarter":       quarters[-1],
     }
 
-
-# ── County model (primary) ────────────────────────────────────────────────────
-
-def train_county(df: pd.DataFrame, statewide_df: pd.DataFrame) -> dict:
-    """
-    Train pooled linear regression on county-level panel.
-
-    Cross-validation uses LeaveOneYearOut to mimic walk-forward:
-    each held-out group = all county observations for one year.
-    This is the fair analogue of the statewide LOO-by-year CV.
-
-    Returns params in the SAME format as the statewide model so the
-    dashboard and price model don't need changing.
-    """
-    df = df.dropna(subset=["mean_ndvi", "county_yield_est"]).copy()
-
-    X      = df[FEATURES].values
-    y      = df["county_yield_est"].values
-    groups = df["year"].values
-
-    model = LinearRegression().fit(X, y)
-
-    # Leave-one-year-out CV
-    logo        = LeaveOneGroupOut()
-    county_preds = np.empty(len(df))
-    for tr, te in logo.split(X, y, groups):
-        county_preds[te] = LinearRegression().fit(X[tr], y[tr]).predict(X[te])
-
-    county_r2  = r2_score(y, model.predict(X))
-    county_mae = mean_absolute_error(y, county_preds)
-
-    # ── Aggregate to statewide for evaluation ─────────────────────────────────
-    df2 = df.copy()
-    df2["pred_county"] = county_preds
-
-    agg = df2.groupby("year").agg(
-        county_yield_sum=("county_yield_est", "sum"),
-        pred_sum        =("pred_county",      "sum"),
-        state_yield     =("state_yield",      "first"),
-    ).reset_index()
-
-    # Coverage fraction: what share of FL production our 8 counties represent
-    agg["coverage"] = agg["county_yield_sum"] / agg["state_yield"]
-    avg_coverage    = float(agg["coverage"].mean())
-
-    agg["pred_statewide"] = agg["pred_sum"] / avg_coverage
-
-    state_r2  = r2_score(agg["state_yield"], agg["pred_statewide"])
-    state_mae = mean_absolute_error(agg["state_yield"], agg["pred_statewide"])
-
-    return {
-        # Keys expected by dashboard / price model (statewide equivalents)
-        "intercept":              float(model.intercept_),
-        "coef_ndvi":              float(model.coef_[0]),
-        "coef_year":              float(model.coef_[1]),
-        "r2_train":               round(state_r2, 4),
-        "mae_loo":                round(state_mae, 0),
-        "historical_avg_yield":   float(statewide_df["yield_boxes"].mean()),
-        "coverage_fraction":      round(avg_coverage, 4),
-        "last_training_year":     int(statewide_df["year"].max()),
-        # County-level detail
-        "county_r2_train":        round(county_r2, 4),
-        "county_mae_loo":         round(county_mae, 0),
-        "n_county_obs":           int(len(df)),
-        "training_mode":          "county_panel",
-    }
-
-
-def predict_yield(mean_ndvi: float, year: int, params: dict) -> float:
-    return (params["intercept"]
-            + params["coef_ndvi"] * mean_ndvi
-            + params["coef_year"] * year)
+    return params, bt
 
 
 def main():
-    statewide_df = pd.read_csv(DATASET_PATH)
+    df = pd.read_csv(DS_PATH)
+    params, bt = train(df)
 
-    # ── Statewide reference ───────────────────────────────────────────────────
-    sw = train_statewide(statewide_df)
-    print("Statewide model (10 obs, LOO-by-row CV):")
-    print(f"  R² (train):   {sw['r2_train']:.3f}")
-    print(f"  MAE (LOO):    {sw['mae_loo']:,.0f} boxes")
+    PARAMS.parent.mkdir(parents=True, exist_ok=True)
+    with open(PARAMS, "w") as f:
+        json.dump(params, f, indent=2)
 
-    if not COUNTY_DS_PATH.exists():
-        print("\ncounty_dataset.csv not found — saving statewide model")
-        PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(PARAMS_PATH, "w") as f:
-            json.dump(sw, f, indent=2)
-        return
+    bt.to_csv(BT_PATH, index=False)
 
-    county_df = pd.read_csv(COUNTY_DS_PATH)
-
-    # ── County model ──────────────────────────────────────────────────────────
-    cp = train_county(county_df, statewide_df)
-    print(f"\nCounty model ({cp['n_county_obs']} obs, LOO-by-year CV):")
-    print(f"  County R² (train):    {cp['county_r2_train']:.3f}")
-    print(f"  County MAE (LOYO):    {cp['county_mae_loo']:,.0f} boxes/county")
-    print(f"  Statewide R² (agg):   {cp['r2_train']:.3f}")
-    print(f"  Statewide MAE (agg):  {cp['mae_loo']:,.0f} boxes")
-    print(f"  Coverage fraction:    {cp['coverage_fraction']:.1%} of FL production")
-
-    print(f"\nR² change: {sw['r2_train']:.3f} → {cp['r2_train']:.3f} "
-          f"({'▲' if cp['r2_train'] > sw['r2_train'] else '▼'}"
-          f" {abs(cp['r2_train'] - sw['r2_train']):.3f})")
-    print(f"MAE change: {sw['mae_loo']/1e6:.2f}M → {cp['mae_loo']/1e6:.2f}M boxes")
-
-    PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PARAMS_PATH, "w") as f:
-        json.dump(cp, f, indent=2)
-    print(f"\nSaved county model params → {PARAMS_PATH}")
+    print(f"Backtest R²:             {params['r2_backtest']:.3f}")
+    print(f"Backtest MAE:            {params['mae_backtest']:.1f} pp")
+    print(f"Directional accuracy:    {params['directional_accuracy']:.0%}")
+    print(f"Backtest quarters:       {params['n_backtest_quarters']}")
+    print(f"\nCoefficients:")
+    for feat, coef in params["coefficients"].items():
+        print(f"  {feat:<20} {coef:+.4f}")
+    print(f"\nSaved → {PARAMS}")
+    print(f"Saved → {BT_PATH}")
 
 
 if __name__ == "__main__":

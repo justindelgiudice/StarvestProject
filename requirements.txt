@@ -1,11 +1,9 @@
 earthengine-api
-geemap
 pandas
 numpy
 scikit-learn
 streamlit
-yfinance
 plotly
 requests
-fastapi
-uvicorn[standard]
+certifi
+python-dotenv
