@@ -32,6 +32,11 @@ BACKTEST_PATH = ROOT / "data" / "processed" / "price_backtest_results.csv"
 PRICE_FEATURES = ["yield_vs_avg", "lagged_price"]
 MIN_TRAIN = 4
 
+# Must match COUNTY_BBOXES / CITRUS_FIPS in fetch_ndvi.py.
+# Only these 8 counties are used for yield modelling; the other 59 FL counties
+# are now fetched for NDVI visualisation only and must NOT be fed into the model.
+CITRUS_FIPS = {"12105", "12055", "12027", "12049", "12051", "12015", "12043", "12081"}
+
 
 def add_lagged_price(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("year").reset_index(drop=True).copy()
@@ -116,7 +121,11 @@ def forecast_yield_vs_avg(forecast_year: int, historical_avg_yield: float) -> tu
         county_seasonal_path = ROOT / "data" / "processed" / "ndvi_county_seasonal.csv"
         if county_seasonal_path.exists():
             cs = pd.read_csv(county_seasonal_path)
-            yr = cs[cs["year"] == forecast_year].dropna(subset=["mean_ndvi"])
+            # Filter to the 8 citrus-belt counties the model was trained on.
+            # The seasonal CSV now covers all 67 FL counties for visualisation,
+            # but summing non-citrus counties would break the coverage_fraction math.
+            cs_citrus = cs[cs["geoid"].astype(str).isin(CITRUS_FIPS)]
+            yr = cs_citrus[cs_citrus["year"] == forecast_year].dropna(subset=["mean_ndvi"])
             if not yr.empty:
                 county_preds = (
                     yp["intercept"]
@@ -145,6 +154,97 @@ def pressure_from_pct_change(pct_change: float) -> str:
     elif pct_change < -5:
         return "bearish"
     return "neutral"
+
+
+def _county_yield_vs_avg(forecast_year: int, yp: dict, cs_citrus: pd.DataFrame) -> tuple[float, float | None, str]:
+    """
+    Apply the county panel model to the 8 citrus counties for a given forecast year.
+    For years with no NDVI data, falls back to the mean of the last 3 available seasons.
+
+    Returns (yield_vs_avg, mean_ndvi_used, source_label).
+    """
+    yr = cs_citrus[cs_citrus["year"] == forecast_year].dropna(subset=["mean_ndvi"])
+
+    if not yr.empty:
+        county_preds = (
+            yp["intercept"]
+            + yp["coef_ndvi"] * yr["mean_ndvi"].values
+            + yp["coef_year"] * forecast_year
+        )
+        # Floor at 0: linear extrapolation can go negative in years of severe decline.
+        predicted_yield = max(0.0, float(county_preds.sum()) / yp["coverage_fraction"])
+        return (
+            predicted_yield / yp["historical_avg_yield"],
+            float(yr["mean_ndvi"].mean()),
+            "yield_model_county",
+        )
+
+    # No NDVI available — estimate using the mean of the last 3 seasons
+    recent_yrs = sorted(cs_citrus["year"].unique())[-3:]
+    recent = cs_citrus[cs_citrus["year"].isin(recent_yrs)].copy()
+    # Average per county across those seasons, then apply model
+    avg_by_county = recent.groupby("geoid")["mean_ndvi"].mean().reset_index()
+    county_preds = (
+        yp["intercept"]
+        + yp["coef_ndvi"] * avg_by_county["mean_ndvi"].values
+        + yp["coef_year"] * forecast_year
+    )
+    predicted_yield = max(0.0, float(county_preds.sum()) / yp["coverage_fraction"])
+    return (
+        predicted_yield / yp["historical_avg_yield"],
+        float(avg_by_county["mean_ndvi"].mean()),
+        "avg_last_3_seasons",
+    )
+
+
+def forecast_multiyear(
+    model,
+    df_lag: pd.DataFrame,
+    yp: dict,
+    start_year: int,
+    n_years: int = 3,
+) -> list[dict]:
+    """
+    Chained forward forecast for n_years starting at start_year.
+
+    Each year's predicted price becomes the lagged_price for the next year.
+    NDVI for years without satellite data is estimated from the last 3 seasons.
+    """
+    cs_path = ROOT / "data" / "processed" / "ndvi_county_seasonal.csv"
+    if not cs_path.exists():
+        return []
+
+    cs_full   = pd.read_csv(cs_path)
+    cs_citrus = cs_full[cs_full["geoid"].astype(str).isin(CITRUS_FIPS)]
+
+    # Seed the chain with the last actual price
+    df_sorted  = df_lag.sort_values("year")
+    prev_price = float(df_sorted["avg_oj_price"].iloc[-1])
+
+    results = []
+    for offset in range(n_years):
+        year = start_year + offset
+
+        yva, ndvi_used, yva_source = _county_yield_vs_avg(year, yp, cs_citrus)
+
+        predicted_price = float(model.predict([[yva, prev_price]])[0])
+        pct_change      = (predicted_price - prev_price) / prev_price * 100
+
+        results.append({
+            "year":                  year,
+            "forecast_ndvi":         round(ndvi_used, 4) if ndvi_used is not None else None,
+            "ndvi_source":           yva_source,
+            "forecast_yield_vs_avg": round(yva, 4),
+            "predicted_yield":       round(yva * yp["historical_avg_yield"]),
+            "lagged_price":          round(prev_price, 2),
+            "predicted_price":       round(predicted_price, 2),
+            "pct_change":            round(pct_change, 2),
+            "price_pressure":        pressure_from_pct_change(pct_change),
+        })
+
+        prev_price = predicted_price  # chain: predicted → next year's lagged
+
+    return results
 
 
 def main():
@@ -183,6 +283,12 @@ def main():
 
     ndvi_2025 = _season_ndvi(forecast_year)
 
+    # ── Multi-year chained forecast (2025, 2026, 2027) ───────────────────────
+    with open(YIELD_PARAMS) as f:
+        yp_full = json.load(f)
+
+    multiyear = forecast_multiyear(model, df_lag, yp_full, start_year=forecast_year, n_years=3)
+
     params = {
         "intercept":                    float(model.intercept_),
         "coef_yield_vs_avg":            float(model.coef_[0]),
@@ -200,6 +306,7 @@ def main():
         "predicted_price":              round(predicted_price, 2),
         "predicted_pct_change":         round(predicted_pct_chg, 2),
         "price_pressure":               price_pressure,
+        "multiyear_forecasts":          multiyear,
     }
 
     with open(PARAMS_PATH, "w") as f:
@@ -234,6 +341,15 @@ def main():
     print(f"  Predicted {forecast_year} price:     ¢{predicted_price:.2f}")
     print(f"  % change vs {last_year}:       {predicted_pct_chg:+.1f}%")
     print(f"  Price signal:           {price_pressure.upper()}")
+    print(f"\n{'='*65}")
+    print("MULTI-YEAR CHAINED FORECAST  (2025 → 2027)")
+    print(f"{'='*65}")
+    for fc in multiyear:
+        print(f"  {fc['year']}  NDVI={fc['forecast_ndvi']} ({fc['ndvi_source']})"
+              f"  yield_vs_avg={fc['forecast_yield_vs_avg']:.3f}"
+              f"  price=¢{fc['predicted_price']:.2f}"
+              f"  ({fc['pct_change']:+.1f}%)  → {fc['price_pressure'].upper()}")
+
     print(f"\nSaved → {PARAMS_PATH}")
     print(f"Saved → {BACKTEST_PATH}")
 
