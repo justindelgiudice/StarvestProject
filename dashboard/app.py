@@ -224,6 +224,27 @@ now            = datetime.now()
 harvest_month  = "Nov" if now.month <= 10 else "Nov"
 harvest_year   = now.year if now.month <= 6 else now.year + 1
 
+# Directional accuracy — price model's walk-forward backtest (up/down correct %)
+_dir_acc_kpi = price_params["directional_accuracy"] if price_params else accuracy
+
+# Next USDA FL citrus monthly report (published Oct–Jul, approx. 10th of month)
+_usda_months = {1, 2, 3, 4, 5, 6, 7, 10, 11, 12}
+_nm, _ny = now.month, now.year
+if now.day >= 10 or now.month not in _usda_months:
+    _nm += 1
+    if _nm > 12:
+        _nm = 1
+        _ny += 1
+for _ in range(12):
+    if _nm in _usda_months:
+        break
+    _nm += 1
+    if _nm > 12:
+        _nm = 1
+        _ny += 1
+from datetime import date as _d
+_next_usda_str = _d(_ny, _nm, 10).strftime("%B %d, %Y")
+
 CHART_BG    = "#ffffff"
 GRID_COLOR  = "#e2e8f0"
 FONT_COLOR  = "#475569"
@@ -280,7 +301,7 @@ with h_col1:
     st.markdown(f"""
 <div style="display:flex;flex-direction:column;align-items:flex-start;gap:0;line-height:1;">
   <img src="data:image/png;base64,{logo_b64}" style="width:460px;display:block;margin:0;padding:0;"/>
-  <p style="color:#64748b;font-size:.82rem;margin:4px 0 2px 0;padding:0;">Satellite-Powered Citrus Commodity Forecasting</p>
+  <p style="color:#64748b;font-size:.82rem;margin:4px 0 2px 0;padding:0;">Early Yield Intelligence for OJ Futures Traders</p>
   <p style="color:#94a3b8;font-size:.75rem;margin:0;padding:0;">NASA MODIS NDVI &nbsp;|&nbsp; USDA Yield Data &nbsp;|&nbsp; OJ Futures</p>
 </div>
 """, unsafe_allow_html=True)
@@ -323,9 +344,9 @@ k3.markdown(f"""<div class="kpi-card">
 </div>""", unsafe_allow_html=True)
 
 k4.markdown(f"""<div class="kpi-card">
-  <div class="kpi-label">Model Accuracy</div>
-  <div class="kpi-value">{accuracy:.0%}</div>
-  <div class="kpi-sub">Backtest · price pressure</div>
+  <div class="kpi-label">Directional Accuracy</div>
+  <div class="kpi-value">{_dir_acc_kpi:.0%}</div>
+  <div class="kpi-sub">OJ price up/down · backtest</div>
 </div>""", unsafe_allow_html=True)
 
 k5.markdown(f"""<div class="kpi-card">
@@ -339,6 +360,48 @@ k6.markdown(f"""<div class="kpi-card">
   <div class="kpi-value">{harvest_month} {harvest_year}</div>
   <div class="kpi-sub">Season start</div>
 </div>""", unsafe_allow_html=True)
+
+gap()
+
+# ── HOW IT WORKS ─────────────────────────────────────────────────────────────
+_pressure_color = "#16a34a" if pressure == "bullish" else "#dc2626" if pressure == "bearish" else "#d97706"
+st.markdown(f"""
+<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;
+            padding:1.1rem 1.4rem;margin-bottom:.2rem;">
+  <div style="color:#ea580c;font-size:.7rem;font-weight:700;text-transform:uppercase;
+              letter-spacing:.1em;margin-bottom:.75rem;">How It Works — The Informational Edge</div>
+  <div style="display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;gap:.3rem;align-items:center;margin-bottom:.75rem;">
+    <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.75rem 1rem;">
+      <div style="color:#ea580c;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.3rem;">① NASA Satellite</div>
+      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">MODIS NDVI · every 16 days</div>
+      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Measures crop health across 8 FL citrus counties throughout the Oct–May growing season in near real-time.</div>
+    </div>
+    <div style="color:#94a3b8;font-size:1.1rem;text-align:center;">→</div>
+    <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.75rem 1rem;">
+      <div style="color:#ea580c;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.3rem;">② Yield Estimate</div>
+      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">Before USDA publishes</div>
+      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Regression model converts NDVI into a yield estimate <b>weeks to months</b> before the USDA releases official production data.</div>
+    </div>
+    <div style="color:#94a3b8;font-size:1.1rem;text-align:center;">→</div>
+    <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.75rem 1rem;">
+      <div style="color:#ea580c;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.3rem;">③ Price Signal</div>
+      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">{_dir_acc_kpi:.0%} directional accuracy</div>
+      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Price model converts the supply estimate into a <b>Bullish / Bearish / Neutral</b> signal on OJ futures direction.</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;">
+    <p style="color:#78350f;font-size:.71rem;margin:0;line-height:1.5;flex:1;">
+      <b>Timing edge:</b> USDA publishes its first official FL citrus crop forecast in October and final production figures ~6–8 months after the growing season begins.
+      Starvest's satellite signal runs continuously through the season — providing a directional view <b>before official numbers are released</b>.
+    </p>
+    <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.5rem .9rem;flex-shrink:0;text-align:center;">
+      <div style="color:#64748b;font-size:.65rem;text-transform:uppercase;letter-spacing:.05em;">Next USDA Report</div>
+      <div style="color:#ea580c;font-size:.78rem;font-weight:700;">{_next_usda_str}</div>
+      <div style="color:#64748b;font-size:.65rem;">Current signal: <span style="color:{_pressure_color};font-weight:700;">{pressure.capitalize()}</span></div>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 gap()
 
@@ -898,16 +961,30 @@ if price_params:
             _fc_rows_html = f"""<div class="perf-row"><span class="perf-key">Predicted OJ Price</span><span class="perf-val">¢{_fp:.1f}/lb</span></div>"""
 
         _cap_disclaimer = '<p style="color:#ef4444;font-size:.68rem;margin-top:.4rem;">⚠️ One or more forecasts exceeded ¢400/lb and were capped — model uncertainty is high at extreme values.</p>' if _any_capped else ""
+        _sig_color = "#16a34a" if pressure == "bullish" else "#dc2626" if pressure == "bearish" else "#d97706"
         st.markdown(f"""<div class="panel-card">
   <div class="panel-title">💰 {_fc_yr_label} Price Forecast</div>
   <div class="perf-row"><span class="perf-key">{_last_yr} Actual</span><span class="perf-val">¢{_last_pr:.0f}/lb</span></div>
   {_fc_rows_html}
   {_cap_disclaimer}
-  <div class="perf-row" style="border:none"><span class="perf-key">Confidence</span><span class="perf-val">{_dir_acc:.0%} directional</span></div>
+  <div class="perf-row" style="border:none"><span class="perf-key">Directional Accuracy</span><span class="perf-val">{_dir_acc:.0%} backtest</span></div>
+  <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:.6rem .85rem;margin-top:.75rem;">
+    <div style="color:#64748b;font-size:.65rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;">Informational Edge</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.3rem;">
+      <div>
+        <div style="color:#64748b;font-size:.68rem;">Next USDA report</div>
+        <div style="color:#ea580c;font-size:.78rem;font-weight:700;">{_next_usda_str}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="color:#64748b;font-size:.68rem;">Starvest signal now</div>
+        <div style="color:{_sig_color};font-size:.78rem;font-weight:700;">{pressure.capitalize()}</div>
+      </div>
+    </div>
+  </div>
   <p style="color:#94a3b8;font-size:.7rem;line-height:1.5;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
     OJ futures quoted in ¢/lb. Forecast NDVI uses avg of last 3 growing seasons.
     Each year's predicted price feeds the next year's lagged-price input.
-    Confidence = % of backtest years model correctly predicted price direction.
+    Directional accuracy = % of backtest years the model correctly called price up vs down.
   </p>
 </div>""", unsafe_allow_html=True)
 
@@ -1018,12 +1095,12 @@ with b2:
   <div class="panel-title">🌾 Yield Model Performance</div>
   <div class="perf-row"><span class="perf-key">R² Score</span><span class="perf-val">{params['r2_train']:.2f}</span></div>
   <div class="perf-row"><span class="perf-key">MAE (LOO)</span><span class="perf-val">{params['mae_loo']/1e6:.1f}M boxes</span></div>
-  <div class="perf-row"><span class="perf-key">Pressure Accuracy</span><span class="perf-val">{accuracy:.0%}</span></div>
+  <div class="perf-row"><span class="perf-key">Directional Accuracy</span><span class="perf-val">{_dir_acc_kpi:.0%}</span></div>
   <div class="perf-row" style="border:none"><span class="perf-key">Backtest Years</span><span class="perf-val">{len(backtest)}</span></div>
   <p style="color:#94a3b8;font-size:.7rem;line-height:1.55;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
     <b style="color:#64748b;">R²</b> — yield variance explained by NDVI + year trend.<br>
     <b style="color:#64748b;">MAE</b> — leave-one-out average error in boxes.<br>
-    <b style="color:#64748b;">Pressure</b> — rule-based Bullish/Bearish accuracy (yield model only; see Price Model above for trained price prediction accuracy).
+    <b style="color:#64748b;">Directional Accuracy</b> — % of backtest years the price model correctly predicted whether OJ prices went up or down.
   </p>
 </div>""", unsafe_allow_html=True)
 
@@ -1056,12 +1133,31 @@ with b3:
 gap()
 
 with st.expander("📖 View Detailed Data & Methodology"):
-    st.markdown("""
+    st.markdown(f"""
+**The Informational Edge**
+
+The core premise of Starvest is a timing advantage: USDA publishes its first official Florida citrus crop
+forecast in October (after the season has begun) and final production figures roughly 6–8 months after
+harvest starts. Starvest uses NASA MODIS satellite imagery — refreshed every 16 days — to estimate crop
+health and probable yield *continuously throughout the growing season*, delivering a directional price
+signal **weeks to months before official USDA numbers are available**.
+
+| Phase | USDA Timeline | Starvest Timeline |
+|-------|--------------|-------------------|
+| Growing season begins (Oct) | No data yet | NDVI readings begin immediately |
+| Mid-season (Jan–Mar) | Monthly crop progress (early estimate) | 10+ satellite composites already processed |
+| Season end (May–Jun) | Preliminary production estimate | Full-season NDVI average finalized |
+| Final official data | ~Aug–Sep of same calendar year | Model forecast issued months earlier |
+
+Historical directional accuracy (price up vs. down): **{_dir_acc_kpi:.0%}** across {price_params['n_backtest_years'] if price_params else '—'} backtest years.
+
+---
+
 **Data Sources**
 
 | Source | Description | Update Frequency |
 |--------|-------------|-----------------|
-| NASA MODIS MOD13A1 | 500m 16-day NDVI composite via Google Earth Engine | 16-day |
+| NASA MODIS MOD13A1 | 500m 16-day NDVI composite via Google Earth Engine | 16 days |
 | USDA NASS Quick Stats | Florida orange production (ALL CLASSES, SURVEY) | Annual |
 | CME OJ Futures (OJ=F) | Orange juice front-month futures price via yfinance | Daily |
 
@@ -1069,37 +1165,47 @@ with st.expander("📖 View Detailed Data & Methodology"):
 
 **Model Methodology**
 
-Starvest uses two separate linear regression models chained together:
+Starvest uses two linear regression models chained together:
 
 **1. Yield Model** (NDVI + year → boxes harvested)
-- **Mean NDVI** — average Normalized Difference Vegetation Index over 8 Florida citrus counties during the Oct–May growing season. Higher NDVI indicates healthier vegetation.
-- **Year** — captures the long-run decline driven by Huanglongbing (HLB / citrus greening disease), which NDVI alone cannot distinguish from weather effects.
+- **Mean NDVI** — average Normalized Difference Vegetation Index over 8 Florida citrus counties during the Oct–May growing season. Higher NDVI = healthier crops = higher expected yield.
+- **Year** — captures the structural decline driven by Huanglongbing (HLB / citrus greening disease), which reduced FL orange production from ~97M boxes (2015) to ~12M boxes (2025). NDVI alone cannot distinguish disease-driven decline from weather effects, so the year trend is included explicitly.
+- To prevent unrealistic extrapolation beyond the training data, the year component is frozen at the last training year for forward forecasts. Only NDVI varies across forecast years.
 
-**2. Price Model** (yield_vs_avg + lagged_price → OJ futures price)
-- **yield_vs_avg** — this season's predicted yield divided by the long-run historical average. Values below 1.0 signal a supply shortage; the model learned a strongly negative coefficient here.
-- **lagged_price** — prior year's average OJ futures price, capturing price momentum and mean-reversion dynamics.
-- The model is trained on all available data and backtested walk-forward. The coefficient on yield_vs_avg is approximately –100 ¢/lb per unit of yield ratio, meaning a 50% supply shortfall drives roughly +50 ¢/lb in expected price.
+**2. Price Model** (yield_vs_avg + lagged_price → OJ futures ¢/lb)
+- **yield_vs_avg** — this season's predicted yield divided by the long-run historical average. Values below 1.0 signal a supply shortage. The model learned a strongly negative coefficient (≈ –92 ¢/lb per unit), meaning a 50% supply shortfall → ~+46 ¢/lb expected price increase.
+- **lagged_price** — prior year's average OJ futures price, capturing momentum and mean-reversion dynamics. Coefficient ≈ 0.26, indicating moderate persistence with strong mean-reversion.
+- Walk-forward backtest: each year's prediction trained only on prior years (min 4 training samples).
 
 **Price Signal (Bullish / Bearish / Neutral)**
 Derived from the price model's predicted % change vs the prior year:
-- **Bullish** — model predicts price will rise more than +5% → buy/long signal for OJ futures.
-- **Bearish** — model predicts price will fall more than –5% → sell/short signal.
+- **Bullish** — model predicts price will rise more than +5% → upward supply pressure on OJ futures.
+- **Bearish** — model predicts price will fall more than –5% → downward pressure.
 - **Neutral** — predicted change within ±5%.
 
-**Backtest**
-Both models use walk-forward validation: each year is predicted using only data from prior years, never future data. The price model additionally requires at least 4 training years before making its first out-of-sample prediction.
+**Directional Accuracy**
+The financially relevant metric for commodity traders is not R² (total variance explained) but whether the model
+correctly called the direction of price movement — up or down — in each backtest year.
+Current directional accuracy: **{_dir_acc_kpi:.0%}** (price model, walk-forward backtest).
 
-**2025–2027 Forecast Pipeline**
-- 2025: NDVI (Oct 2024–May 2025, actual satellite data) → Yield Model → yield_vs_avg → Price Model + 2024 actual price → ¢588 predicted.
-- 2026: NDVI (Oct 2025–May 2026, actual satellite data) → Yield Model → yield_vs_avg → Price Model + 2025 predicted price (chained).
-- 2027: NDVI estimated as mean of 2024–2026 growing seasons (satellite data not yet available) → same chain.
-
-Note: the yield model's strong negative year coefficient (–536K boxes/county/year) reflects the severe HLB disease decline from 2015–2024. Projecting this linear trend to 2026–2027 produces near-zero yield forecasts, which in turn drives the extreme OJ price predictions. These are the model's honest extrapolations; the actual industry trajectory may differ if HLB impact levels off.
+---
 
 **Limitations**
-- Small dataset (~10 years of annual data). Results are directionally informative, not investment-grade.
-- The year trend in the yield model extrapolates the HLB disease decline, which may be leveling off in reality — resulting in an aggressive low yield_vs_avg for 2025.
-- OJ futures are influenced by factors beyond Florida supply (Brazil production, weather, macroeconomics, currency).
-- The 2023 price spike following Hurricane Ian was a black swan event the model could not anticipate.
+
+- **Small dataset (~12 years of annual data).** Results are directionally informative, not investment-grade.
+  Statistical significance at this sample size is limited; treat signals as a supplementary tool, not a sole trading input.
+
+- **Brazil supply.** Brazil produces ~70% of global OJ concentrate. A bad Brazilian harvest can spike OJ futures
+  regardless of Florida's crop health. Starvest does not model Brazil.
+
+- **Weather shocks.** Hurricanes (e.g., Ian in 2022) and severe freezes can destroy a season's crop in days —
+  events that appear in NDVI only after the fact and cannot be forecast from growing-season satellite data alone.
+
+- **Macroeconomics and currency.** OJ futures are denominated in USD. Dollar strength, consumer spending shifts,
+  and broader commodity market moves affect prices independently of supply signals.
+
+- **HLB disease trajectory.** The yield model's year trend captures the 2015–2025 HLB decline (–536K boxes/county/year).
+  If this structural decline levels off — as some industry observers expect — the model will underestimate future yields.
+  The year trend is frozen at the last training year for forecasts to reduce (but not eliminate) this risk.
 """)
 
