@@ -255,7 +255,7 @@ def ndvi_fill_rgba(val: float, alpha: float = 0.45) -> str:
     else:
         return f"rgba(239,68,68,{alpha})"    # red — stressed
 
-def chart_layout(fig, height=300):
+def chart_layout(fig, height=380):
     fig.update_layout(
         height=height,
         paper_bgcolor=CHART_BG,
@@ -542,7 +542,7 @@ with c_map:
                 "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
             }],
         ),
-        height=390, margin=dict(t=0, b=0, l=0, r=0),
+        height=480, margin=dict(t=0, b=0, l=0, r=0),
         paper_bgcolor="#ffffff", showlegend=False,
     )
     st.plotly_chart(fig_map, use_container_width=True, config=CHART_CFG)
@@ -602,7 +602,7 @@ with c_ndvi:
         fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
         hovertemplate="<b>%{x|%b %Y}</b><br>NDVI: %{y:.4f}<extra></extra>",
     ))
-    chart_layout(fig_ndvi, height=420)
+    chart_layout(fig_ndvi, height=480)
     fig_ndvi.update_layout(yaxis_title="Mean NDVI", xaxis_title="")
     st.plotly_chart(fig_ndvi, use_container_width=True, config=CHART_CFG)
     hint("NDVI (Normalized Difference Vegetation Index) measures plant greenness from satellite data. Values ≥ 0.6 indicate healthy, dense vegetation; 0.4–0.6 = moderate health; below 0.4 signals stressed or sparse crops. Each data point is a 16-day average over the Florida citrus belt.")
@@ -653,7 +653,7 @@ if _cdf is not None:
             showarrow=False, xanchor="right",
             font=dict(size=12, color="#2563eb"),
         )
-        chart_layout(fig_ns, height=300)
+        chart_layout(fig_ns, height=380)
         fig_ns.update_layout(
             xaxis_title="County Mean NDVI (growing season)",
             yaxis_title="County Est. Yield (boxes)",
@@ -944,7 +944,7 @@ if price_params:
                 name=f"{price_params['forecast_year']} Forecast",
                 hovertemplate=f"<b>{price_params['forecast_year']} Forecast</b><br>¢{price_params['predicted_price']:.1f}/lb<extra></extra>",
             ))
-        chart_layout(fig_pb, height=300)
+        chart_layout(fig_pb, height=380)
         fig_pb.update_layout(
             yaxis_title="OJ Price (¢/lb)", xaxis_title="",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),

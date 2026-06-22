@@ -112,6 +112,7 @@ def train_county(df: pd.DataFrame, statewide_df: pd.DataFrame) -> dict:
         "mae_loo":                round(state_mae, 0),
         "historical_avg_yield":   float(statewide_df["yield_boxes"].mean()),
         "coverage_fraction":      round(avg_coverage, 4),
+        "last_training_year":     int(statewide_df["year"].max()),
         # County-level detail
         "county_r2_train":        round(county_r2, 4),
         "county_mae_loo":         round(county_mae, 0),

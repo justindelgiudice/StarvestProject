@@ -131,10 +131,11 @@ def forecast_yield_vs_avg(forecast_year: int, historical_avg_yield: float) -> tu
             cs_citrus = cs[cs["geoid"].astype(str).isin(CITRUS_FIPS)]
             yr = cs_citrus[cs_citrus["year"] == forecast_year].dropna(subset=["mean_ndvi"])
             if not yr.empty:
+                _trend_year = min(forecast_year, yp.get("last_training_year", forecast_year))
                 county_preds = (
                     yp["intercept"]
                     + yp["coef_ndvi"] * yr["mean_ndvi"].values
-                    + yp["coef_year"] * forecast_year
+                    + yp["coef_year"] * _trend_year
                 )
                 predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
                 return float(predicted_yield / yp["historical_avg_yield"]), "yield_model_county"
@@ -169,11 +170,15 @@ def _county_yield_vs_avg(forecast_year: int, yp: dict, cs_citrus: pd.DataFrame) 
     """
     yr = cs_citrus[cs_citrus["year"] == forecast_year].dropna(subset=["mean_ndvi"])
 
+    # Freeze the year component at the last training year so the linear HLB decline
+    # trend isn't extrapolated into the future — only NDVI varies across forecast years.
+    _trend_year = min(forecast_year, yp.get("last_training_year", forecast_year))
+
     if not yr.empty:
         county_preds = (
             yp["intercept"]
             + yp["coef_ndvi"] * yr["mean_ndvi"].values
-            + yp["coef_year"] * forecast_year
+            + yp["coef_year"] * _trend_year
         )
         predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
         return (
@@ -190,7 +195,7 @@ def _county_yield_vs_avg(forecast_year: int, yp: dict, cs_citrus: pd.DataFrame) 
     county_preds = (
         yp["intercept"]
         + yp["coef_ndvi"] * avg_by_county["mean_ndvi"].values
-        + yp["coef_year"] * forecast_year
+        + yp["coef_year"] * _trend_year
     )
     predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
     return (
