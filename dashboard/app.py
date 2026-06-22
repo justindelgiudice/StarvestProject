@@ -409,7 +409,8 @@ with c_map:
                 "county_yield_est": 0.0,
             })
             if county_dataset is not None and sel_year is not None:
-                _yy = county_dataset[county_dataset["year"] == sel_year].copy()
+                _eff_yr = min(sel_year, int(county_dataset["year"].max()))
+                _yy = county_dataset[county_dataset["year"] == _eff_yr].copy()
                 _yy["geoid"] = _yy["geoid"].astype(str)
                 for _, _r in _yy.iterrows():
                     _yield_all.loc[_yield_all["geoid"] == _r["geoid"], "county_yield_est"] = _r["county_yield_est"]
@@ -479,6 +480,13 @@ with c_map:
             line=dict(color="#f97316", width=2.5),
             hoverinfo="skip", showlegend=False,
         ))
+        fig_map.add_trace(go.Scattermapbox(
+            lat=[28.05], lon=[-81.55],
+            mode="text",
+            text=["Florida Citrus Belt"],
+            textfont=dict(color="#f97316", size=9),
+            hoverinfo="skip", showlegend=False,
+        ))
 
         # ── County name labels for all 67 counties ────────────────────────────
         _lbl_lats, _lbl_lons, _lbl_texts = [], [], []
@@ -501,9 +509,11 @@ with c_map:
     # Regional average label
     label_suffix = f" ({sel_year})" if sel_year else ""
     if map_view == "Citrus Output" and county_dataset is not None and sel_year is not None:
-        yield_year_lbl = county_dataset[county_dataset["year"] == sel_year]
+        _eff_yr_lbl = min(sel_year, int(county_dataset["year"].max()))
+        yield_year_lbl = county_dataset[county_dataset["year"] == _eff_yr_lbl]
         total_yield_lbl = yield_year_lbl["county_yield_est"].sum() if not yield_year_lbl.empty else 0
-        map_label     = f"Est. {total_yield_lbl/1e6:.1f}M boxes{label_suffix}"
+        _yr_note = f" ({_eff_yr_lbl} data)" if _eff_yr_lbl != sel_year else label_suffix
+        map_label     = f"Est. {total_yield_lbl/1e6:.1f}M boxes{_yr_note}"
         map_hover     = f"Estimated citrus yield: {total_yield_lbl:,.0f} boxes<extra></extra>"
         dot_color     = "#2563eb"
     else:
@@ -747,7 +757,7 @@ with c_ts:
         line=dict(color="#2563eb", width=2.5),
         mode="lines+markers",
         marker=dict(size=7),
-        hovertemplate="<b>%{x}</b><br>OJ Price: ¢%{y:.1f}<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>OJ Price: ¢%{y:.1f}/lb<extra></extra>",
     ), secondary_y=True)
     chart_layout(fig_ts)
     fig_ts.update_layout(
@@ -846,7 +856,7 @@ if price_params:
   <div class="perf-row">
     <span class="perf-key">{_fc['year']} ({_src})</span>
     <span class="perf-val" style="font-size:.82rem;">
-      ¢{_fc['predicted_price']:.0f}
+      ¢{_fc['predicted_price']:.0f}/lb
       &nbsp;<span style="color:{_pc_c};font-size:.72rem;">{_pc_a}{abs(_fc['pct_change']):.0f}%</span>
       &nbsp;<span style="color:{_pp_c};font-size:.72rem;">{_pp.capitalize()}</span>
     </span>

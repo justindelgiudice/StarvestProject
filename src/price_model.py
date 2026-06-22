@@ -37,6 +37,10 @@ MIN_TRAIN = 4
 # are now fetched for NDVI visualisation only and must NOT be fed into the model.
 CITRUS_FIPS = {"12105", "12055", "12027", "12049", "12051", "12015", "12043", "12081"}
 
+# Minimum plausible FL statewide orange production — prevents linear trend extrapolation
+# from forecasting physically implausible near-zero harvests in forward-looking years.
+YIELD_FLOOR = 8_000_000  # boxes
+
 
 def add_lagged_price(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("year").reset_index(drop=True).copy()
@@ -132,7 +136,7 @@ def forecast_yield_vs_avg(forecast_year: int, historical_avg_yield: float) -> tu
                     + yp["coef_ndvi"] * yr["mean_ndvi"].values
                     + yp["coef_year"] * forecast_year
                 )
-                predicted_yield = float(county_preds.sum()) / yp["coverage_fraction"]
+                predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
                 return float(predicted_yield / yp["historical_avg_yield"]), "yield_model_county"
 
     # Statewide / fallback: single regional-average NDVI
@@ -171,8 +175,7 @@ def _county_yield_vs_avg(forecast_year: int, yp: dict, cs_citrus: pd.DataFrame) 
             + yp["coef_ndvi"] * yr["mean_ndvi"].values
             + yp["coef_year"] * forecast_year
         )
-        # Floor at 0: linear extrapolation can go negative in years of severe decline.
-        predicted_yield = max(0.0, float(county_preds.sum()) / yp["coverage_fraction"])
+        predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
         return (
             predicted_yield / yp["historical_avg_yield"],
             float(yr["mean_ndvi"].mean()),
@@ -189,7 +192,7 @@ def _county_yield_vs_avg(forecast_year: int, yp: dict, cs_citrus: pd.DataFrame) 
         + yp["coef_ndvi"] * avg_by_county["mean_ndvi"].values
         + yp["coef_year"] * forecast_year
     )
-    predicted_yield = max(0.0, float(county_preds.sum()) / yp["coverage_fraction"])
+    predicted_yield = max(YIELD_FLOOR, float(county_preds.sum()) / yp["coverage_fraction"])
     return (
         predicted_yield / yp["historical_avg_yield"],
         float(avg_by_county["mean_ndvi"].mean()),
