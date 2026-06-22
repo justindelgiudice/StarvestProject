@@ -350,7 +350,7 @@ def main():
     print(f"  % change vs {last_year}:       {predicted_pct_chg:+.1f}%")
     print(f"  Price signal:           {price_pressure.upper()}")
     print(f"\n{'='*65}")
-    print("MULTI-YEAR CHAINED FORECAST  (2025 → 2027)")
+    print(f"MULTI-YEAR CHAINED FORECAST  ({multiyear[0]['year']} → {multiyear[-1]['year']})")
     print(f"{'='*65}")
     for fc in multiyear:
         print(f"  {fc['year']}  NDVI={fc['forecast_ndvi']} ({fc['ndvi_source']})"

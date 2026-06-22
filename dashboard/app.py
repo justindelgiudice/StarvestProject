@@ -744,7 +744,7 @@ with c_bt:
             text=[str(y) for y in _bt_years],
             textposition="top right",
             textfont=dict(color="#7c3aed", size=8),
-            name="2025–2027 Forecast",
+            name=f"{_bt_years[0]}–{_bt_years[-1]} Forecast",
             hovertemplate="<b>%{text} Forecast</b><br>Predicted: %{y:,.0f} boxes<extra></extra>",
         )
     chart_layout(fig_bt)
@@ -753,7 +753,8 @@ with c_bt:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(fig_bt, use_container_width=True, config=CHART_CFG)
-    hint("Orange = actual USDA yield per year. Blue dashes = walk-forward backtest predictions (each year trained only on prior years). Purple stars/dotted line = model forecasts for 2025–2027 (no USDA data published yet; 2027 uses average of last 3 growing seasons as NDVI proxy).")
+    _bt_fc_range = f"{_multiyear_bt[0]['year']}–{_multiyear_bt[-1]['year']}" if _multiyear_bt else "upcoming years"
+    hint(f"Orange = actual USDA yield per year. Blue dashes = walk-forward backtest predictions (each year trained only on prior years). Purple stars/dotted line = model forecasts for {_bt_fc_range} (no USDA data published yet; {_multiyear_bt[-1]['year'] if _multiyear_bt else ''} uses average of last 3 growing seasons as NDVI proxy).")
 
 gap()
 
@@ -862,22 +863,31 @@ if price_params:
 
     with pf_left:
         _mf_card = price_params.get("multiyear_forecasts", [])
+        _fc_yr_label = f"{_mf_card[0]['year']}–{_mf_card[-1]['year']}" if _mf_card else "Forecast"
         _dir_acc = price_params["directional_accuracy"]
         _last_yr = price_params["last_year"]
         _last_pr = price_params["last_price"]
+        _PRICE_CAP = 400.0
 
         _fc_rows_html = ""
+        _any_capped = False
         for _fc in _mf_card:
             _pp   = _fc["price_pressure"]
+            _raw_price = _fc['predicted_price']
+            _capped = _raw_price > _PRICE_CAP
+            _display_price = min(_raw_price, _PRICE_CAP)
+            if _capped:
+                _any_capped = True
             _pc_c = "#22c55e" if _fc["pct_change"] > 0 else "#ef4444"
             _pc_a = "▲" if _fc["pct_change"] > 0 else "▼"
             _pp_c = {"bullish": "#22c55e", "bearish": "#ef4444", "neutral": "#f59e0b"}.get(_pp, "#64748b")
             _src  = "NDVI" if _fc.get("ndvi_source", "") in ("yield_model_county", "yield_model") else "Est."
+            _cap_note = ' <span style="color:#ef4444;font-size:.67rem;">⚠️ capped</span>' if _capped else ""
             _fc_rows_html += f"""
   <div class="perf-row">
     <span class="perf-key">{_fc['year']} ({_src})</span>
     <span class="perf-val" style="font-size:.82rem;">
-      ¢{_fc['predicted_price']:.0f}/lb
+      ¢{_display_price:.0f}/lb{_cap_note}
       &nbsp;<span style="color:{_pc_c};font-size:.72rem;">{_pc_a}{abs(_fc['pct_change']):.0f}%</span>
       &nbsp;<span style="color:{_pp_c};font-size:.72rem;">{_pp.capitalize()}</span>
     </span>
@@ -887,13 +897,15 @@ if price_params:
             _fp = price_params["predicted_price"]
             _fc_rows_html = f"""<div class="perf-row"><span class="perf-key">Predicted OJ Price</span><span class="perf-val">¢{_fp:.1f}/lb</span></div>"""
 
+        _cap_disclaimer = '<p style="color:#ef4444;font-size:.68rem;margin-top:.4rem;">⚠️ One or more forecasts exceeded ¢400/lb and were capped — model uncertainty is high at extreme values.</p>' if _any_capped else ""
         st.markdown(f"""<div class="panel-card">
-  <div class="panel-title">💰 2025–2027 Price Forecast</div>
+  <div class="panel-title">💰 {_fc_yr_label} Price Forecast</div>
   <div class="perf-row"><span class="perf-key">{_last_yr} Actual</span><span class="perf-val">¢{_last_pr:.0f}/lb</span></div>
   {_fc_rows_html}
+  {_cap_disclaimer}
   <div class="perf-row" style="border:none"><span class="perf-key">Confidence</span><span class="perf-val">{_dir_acc:.0%} directional</span></div>
   <p style="color:#94a3b8;font-size:.7rem;line-height:1.5;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
-    OJ futures quoted in ¢/lb. 2025–2026 use actual satellite NDVI; 2027 uses avg of last 3 growing seasons.
+    OJ futures quoted in ¢/lb. Forecast NDVI uses avg of last 3 growing seasons.
     Each year's predicted price feeds the next year's lagged-price input.
     Confidence = % of backtest years model correctly predicted price direction.
   </p>
@@ -930,7 +942,7 @@ if price_params:
                 text=_fc_t,
                 textposition="top right",
                 textfont=dict(color="#7c3aed", size=9),
-                name="2025–2027 Forecast",
+                name=f"{_mf_pb[0]['year']}–{_mf_pb[-1]['year']} Forecast",
                 hovertemplate="<b>%{x}</b><br>Forecast: ¢%{y:.1f}/lb<extra></extra>",
             ))
         else:
@@ -978,23 +990,27 @@ b1, b2, b3 = st.columns(3, gap="medium")
 
 with b1:
     _mf_out = price_params.get("multiyear_forecasts", []) if price_params else []
+    _out_yr_label = f"{_mf_out[0]['year']}–{_mf_out[-1]['year']}" if _mf_out else "Outlook"
+    _PRICE_CAP_OUT = 400.0
     _out_rows = ""
     for _fc in _mf_out:
         _fc_pp_c = "#22c55e" if _fc["price_pressure"] == "bullish" else "#ef4444" if _fc["price_pressure"] == "bearish" else "#f59e0b"
+        _out_disp_price = min(_fc['predicted_price'], _PRICE_CAP_OUT)
+        _out_cap = "⚠️ " if _fc['predicted_price'] > _PRICE_CAP_OUT else ""
         _out_rows += f"""
   <div class="outlook-metric">
     <span class="outlook-key">{_fc['year']} Forecast</span>
-    <span class="outlook-val">{_fc['predicted_yield']/1e6:.1f}M boxes &nbsp;·&nbsp; <span style="color:{_fc_pp_c};">¢{_fc['predicted_price']:.0f}/lb</span></span>
+    <span class="outlook-val">{_fc['predicted_yield']/1e6:.1f}M boxes &nbsp;·&nbsp; <span style="color:{_fc_pp_c};">{_out_cap}¢{_out_disp_price:.0f}/lb</span></span>
   </div>"""
     if not _out_rows:
         _out_rows = f"""
   <div class="outlook-metric"><span class="outlook-key">Predicted Yield</span><span class="outlook-val">{latest['yield_boxes']/1e6:.2f}M boxes</span></div>"""
     st.markdown(f"""<div class="panel-card">
-  <div class="panel-title">🍊 2025–2027 Outlook</div>
+  <div class="panel-title">🍊 {_out_yr_label} Outlook</div>
   {_out_rows}
   <div class="outlook-metric"><span class="outlook-key">Market Signal</span><span class="outlook-val" style="color:{'#22c55e' if pressure=='bullish' else '#ef4444' if pressure=='bearish' else '#f59e0b'}">{pressure.capitalize()}</span></div>
   <div class="outlook-metric" style="border:none"><span class="outlook-key">Backtest Accuracy</span><span class="outlook-val">{accuracy:.0%}</span></div>
-  <p style="color:#475569;font-size:.7rem;margin-top:1rem;line-height:1.5;">2025–2026 forecasts use actual NDVI; 2027 uses avg of last 3 growing seasons. Model extrapolates FL citrus's HLB disease decline trend — extreme low-yield years drive elevated price forecasts.</p>
+  <p style="color:#475569;font-size:.7rem;margin-top:1rem;line-height:1.5;">Forecast NDVI uses avg of last 3 growing seasons. Model captures FL citrus HLB disease decline — NDVI and lagged price drive future projections.</p>
 </div>""", unsafe_allow_html=True)
 
 with b2:

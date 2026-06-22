@@ -11,7 +11,10 @@ TICKER = "OJ=F"
 OUTPUT_PATH = Path(__file__).parent.parent / "data" / "raw" / "prices_raw.csv"
 
 
-def fetch_prices(start: str = "2015-01-01", end: str = "2024-12-31") -> pd.DataFrame:
+def fetch_prices(start: str = "2015-01-01", end: str = None) -> pd.DataFrame:
+    if end is None:
+        from datetime import date
+        end = date.today().strftime("%Y-%m-%d")
     raw = yf.download(TICKER, start=start, end=end, auto_adjust=True)
     df = raw[["Close"]].rename(columns={"Close": "close"}).reset_index()
     df.columns = ["date", "close"]
