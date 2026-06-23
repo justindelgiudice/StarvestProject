@@ -1,10 +1,14 @@
 """
 TerraRisk — Florida Climate Risk Intelligence Dashboard
-Satellite base map + continuous IDW-interpolated risk heatmap + county tooltip layer.
+
+Layers (radio toggle):
+  Overall Risk | Hurricane Tracks | Tornadoes | Sinkholes | Flood Zones | Sea Level Rise
+
+Each layer uses actual event coordinates so the heatmap only lights up
+where events occurred — radar-style, with transparent/white space where there is no data.
 """
 
 import os
-import numpy as np
 import pandas as pd
 import folium
 from folium.plugins import HeatMap
@@ -12,12 +16,17 @@ import streamlit as st
 from streamlit_folium import st_folium
 import requests
 
-RISK_CSV = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "processed", "county_risk_scores.csv")
-)
-FLORIDA_GEOJSON_URL = (
-    "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
-)
+# ── Data paths ─────────────────────────────────────────────────────────────────
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+PATHS = {
+    "risk":       os.path.join(ROOT, "data", "processed", "county_risk_scores.csv"),
+    "hurricanes": os.path.join(ROOT, "data", "raw", "hurricanes.csv"),
+    "tornadoes":  os.path.join(ROOT, "data", "raw", "tornadoes.csv"),
+    "sinkholes":  os.path.join(ROOT, "data", "raw", "sinkholes.csv"),
+    "flood":      os.path.join(ROOT, "data", "raw", "flood_zones.csv"),
+    "sealevel":   os.path.join(ROOT, "data", "raw", "sealevel.csv"),
+}
 
 FLORIDA_FIPS = {
     "Alachua": "12001", "Baker": "12003", "Bay": "12005", "Bradford": "12007",
@@ -39,7 +48,6 @@ FLORIDA_FIPS = {
     "Wakulla": "12129", "Walton": "12131", "Washington": "12133",
 }
 
-# County centroids used as IDW source points for the heatmap
 COUNTY_CENTROIDS = {
     "Alachua": (29.67, -82.33), "Baker": (30.33, -82.30), "Bay": (30.22, -85.65),
     "Bradford": (29.94, -82.17), "Brevard": (28.26, -80.72), "Broward": (26.07, -80.25),
@@ -66,76 +74,209 @@ COUNTY_CENTROIDS = {
     "Washington": (30.60, -85.67),
 }
 
+# NOAA tide gauge stations: station_id → (lat, lon)
+TIDE_GAUGE_COORDS = {
+    "8720218": (30.40, -81.43),   # Mayport - Jacksonville
+    "8721604": (28.42, -80.59),   # Trident Pier - Cape Canaveral
+    "8722670": (26.61, -80.03),   # Lake Worth Pier - West Palm Beach
+    "8723214": (25.73, -80.16),   # Virginia Key - Miami
+    "8724580": (24.55, -81.81),   # Key West
+    "8725520": (26.65, -81.87),   # Fort Myers
+    "8726520": (27.77, -82.63),   # St. Petersburg
+    "8727520": (29.13, -83.03),   # Cedar Key
+    "8728690": (29.73, -84.98),   # Apalachicola
+    "8729108": (30.40, -87.21),   # Pensacola
+}
+
 ESRI_SATELLITE = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
 
-# Weather-radar style gradient: green (low) → yellow → orange → red (critical)
-HEATMAP_GRADIENT = {
+# Radar-style gradient: transparent → blue → cyan → green → yellow → orange → red
+RADAR_GRADIENT = {
     0.00: "rgba(0,0,0,0)",
-    0.20: "#22CC44",
-    0.40: "#AADD00",
-    0.55: "#FFDD00",
-    0.70: "#FF8800",
-    0.85: "#FF3300",
-    1.00: "#CC0000",
+    0.10: "#0000FF",
+    0.25: "#00CCFF",
+    0.45: "#00FF88",
+    0.60: "#FFFF00",
+    0.75: "#FF8800",
+    0.90: "#FF2200",
+    1.00: "#AA0000",
 }
 
+LAYER_CHOICES = [
+    "Overall Risk",
+    "Hurricane Tracks",
+    "Tornadoes",
+    "Sinkholes",
+    "Flood Zones",
+    "Sea Level Rise",
+]
+
+# HeatMap settings that produce a radar look (NOT a filled blob)
+HEATMAP_DEFAULTS = dict(
+    radius=18,
+    blur=14,
+    gradient=RADAR_GRADIENT,
+    min_opacity=0.0,
+    max_zoom=14,
+)
+
+
+# ── Data loaders ───────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
 def load_florida_geojson():
-    resp = requests.get(FLORIDA_GEOJSON_URL, timeout=30)
+    resp = requests.get(
+        "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json",
+        timeout=30,
+    )
     resp.raise_for_status()
-    all_counties = resp.json()
     fips_set = set(FLORIDA_FIPS.values())
     return {
         "type": "FeatureCollection",
-        "features": [f for f in all_counties["features"] if f["id"] in fips_set],
+        "features": [f for f in resp.json()["features"] if f["id"] in fips_set],
     }
 
 
 @st.cache_data
-def load_risk_data():
-    df = pd.read_csv(RISK_CSV)
-    df["fips"] = df["county"].map(FLORIDA_FIPS)
-    return df
+def load_all_data():
+    """Load every raw data file. Returns dict of DataFrames."""
+    dfs = {}
+    for key, path in PATHS.items():
+        if os.path.exists(path):
+            dfs[key] = pd.read_csv(path)
+        else:
+            dfs[key] = pd.DataFrame()
+    return dfs
 
 
-@st.cache_data
-def generate_heatmap_data(county_scores: tuple) -> list:
+# ── Heatmap point builders ─────────────────────────────────────────────────────
+
+def hurricane_points(df: pd.DataFrame) -> list:
     """
-    IDW-interpolate county risk scores onto a dense lat/lon grid.
-    county_scores: tuple of (county, score) pairs (hashable for caching).
-    Returns list of [lat, lon, normalized_weight] for Folium HeatMap.
+    3,015 individual storm track records from hurricanes.csv.
+    Weight = wind_knots / 165 (Cat 5 landfall ≈ 1.0).
+    Points cluster along actual historical track corridors.
     """
-    src = [(COUNTY_CENTROIDS[c][0], COUNTY_CENTROIDS[c][1], s)
-           for c, s in county_scores if c in COUNTY_CENTROIDS]
-    src_lats = np.array([p[0] for p in src])
-    src_lons = np.array([p[1] for p in src])
-    src_scores = np.array([p[2] for p in src])
-
-    # Dense grid over Florida bounding box
-    grid_lats = np.arange(24.3, 31.2, 0.07)
-    grid_lons = np.arange(-87.9, -79.6, 0.07)
-
-    heat_data = []
-    for lat in grid_lats:
-        # Vectorized IDW across all longitudes for this latitude row
-        for lon in grid_lons:
-            d2 = (src_lats - lat) ** 2 + (src_lons - lon) ** 2
-            d2 = np.maximum(d2, 1e-8)
-            w = 1.0 / d2
-            score = float(np.dot(w, src_scores) / w.sum())
-            heat_data.append([float(lat), float(lon), min(1.0, score / 10.0)])
-
-    return heat_data
+    pts = []
+    for _, r in df.iterrows():
+        w = r.get("wind_knots")
+        try:
+            w = float(w)
+        except (TypeError, ValueError):
+            w = 0.0
+        if w <= 0:
+            continue
+        pts.append([float(r["latitude"]), float(r["longitude"]), min(1.0, w / 165.0)])
+    return pts
 
 
-def enrich_geojson(geojson: dict, df: pd.DataFrame) -> dict:
-    """Return a new GeoJSON with risk data embedded in feature properties for GeoJsonTooltip."""
-    risk_lookup = dict(zip(df["fips"], df["composite_risk_score"]))
-    detail = df.set_index("fips").to_dict("index")
+def tornado_points(df: pd.DataFrame) -> list:
+    """
+    NOAA SPC Florida tornado touchdowns.
+    Weight = (EF + 0.5) / 5.5  so EF0 shows faintly, EF5 is max.
+    """
+    if df.empty:
+        return []
+    pts = []
+    for _, r in df.iterrows():
+        ef = max(0, int(r.get("ef_scale", 0)))
+        weight = (ef + 0.5) / 5.5
+        pts.append([float(r["latitude"]), float(r["longitude"]), round(weight, 3)])
+    return pts
 
+
+def sinkhole_points(df: pd.DataFrame) -> list:
+    """
+    FGS sinkhole locations from county-level statistics.
+    Uniform weight 0.7 (presence/absence metric, not magnitude).
+    """
+    if df.empty:
+        return []
+    return [[float(r["latitude"]), float(r["longitude"]), 0.7] for _, r in df.iterrows()]
+
+
+def flood_points(df: pd.DataFrame) -> list:
+    """
+    FEMA NFHL SFHA percentage per county rendered as heatmap points
+    at county centroids. Weight = sfha_pct / 95 (Collier ≈ 95% = max).
+    Only counties with real FEMA data (sfha_pct not null) are plotted.
+    """
+    if df.empty:
+        return []
+    pts = []
+    for _, r in df.iterrows():
+        pct = r.get("sfha_pct")
+        try:
+            pct = float(pct)
+        except (TypeError, ValueError):
+            continue
+        county = r["county"]
+        if county not in COUNTY_CENTROIDS:
+            continue
+        lat, lon = COUNTY_CENTROIDS[county]
+        pts.append([lat, lon, min(1.0, pct / 95.0)])
+    return pts
+
+
+def sealevel_points(df: pd.DataFrame) -> list:
+    """
+    NOAA tide gauge stations along Florida coast.
+    Weight = projected_slr_2100_m / 0.85 (Gulf coast max ≈ 0.78m).
+    Only the 10 gauge stations with actual coordinates are plotted
+    → color appears only along the coastline, not inland.
+    """
+    if df.empty:
+        return []
+    pts = []
+    for _, r in df.iterrows():
+        sid = str(r.get("station_id", "")).strip()
+        if sid not in TIDE_GAUGE_COORDS:
+            continue
+        lat, lon = TIDE_GAUGE_COORDS[sid]
+        slr = float(r.get("projected_slr_2100_m", 0))
+        pts.append([lat, lon, min(1.0, slr / 0.85)])
+    return pts
+
+
+def combined_points(dfs: dict) -> list:
+    """
+    Merge all event types into a single point cloud for the Overall Risk layer.
+    Each category is weighted by its contribution to the composite risk model
+    (hurricane 40%, flood 35%, sea level 25%) plus bonus layers.
+    """
+    pts = []
+    scale = {"hurricane": 0.40, "tornado": 0.30, "sinkhole": 0.25, "flood": 0.35, "sealevel": 0.25}
+
+    for lat, lon, w in hurricane_points(dfs.get("hurricanes", pd.DataFrame())):
+        pts.append([lat, lon, w * scale["hurricane"]])
+    for lat, lon, w in tornado_points(dfs.get("tornadoes", pd.DataFrame())):
+        pts.append([lat, lon, w * scale["tornado"]])
+    for lat, lon, w in sinkhole_points(dfs.get("sinkholes", pd.DataFrame())):
+        pts.append([lat, lon, w * scale["sinkhole"]])
+    for lat, lon, w in flood_points(dfs.get("flood", pd.DataFrame())):
+        pts.append([lat, lon, w * scale["flood"] * 4])  # boost: fewer points, need extra density
+    for lat, lon, w in sealevel_points(dfs.get("sealevel", pd.DataFrame())):
+        pts.append([lat, lon, w * scale["sealevel"] * 6])  # boost: only 10 coastal stations
+    return pts
+
+
+# ── Map builder ────────────────────────────────────────────────────────────────
+
+LAYER_META = {
+    "Overall Risk":     {"fn": combined_points,  "radius": 18, "blur": 14, "label": "All risk factors combined"},
+    "Hurricane Tracks": {"fn": hurricane_points,  "radius": 14, "blur": 10, "label": "Wind speed (knots), 1950-2025"},
+    "Tornadoes":        {"fn": tornado_points,    "radius": 14, "blur": 10, "label": "EF scale, 1950-2023"},
+    "Sinkholes":        {"fn": sinkhole_points,   "radius": 10, "blur": 8,  "label": "FGS county reports (synthetic coords)"},
+    "Flood Zones":      {"fn": flood_points,      "radius": 28, "blur": 22, "label": "FEMA NFHL SFHA % by county"},
+    "Sea Level Rise":   {"fn": sealevel_points,   "radius": 28, "blur": 22, "label": "IPCC AR6 2100 projection, NOAA gauges"},
+}
+
+
+def enrich_geojson(geojson: dict, df_risk: pd.DataFrame) -> dict:
+    risk_lookup = dict(zip(df_risk["fips"], df_risk["composite_risk_score"]))
+    detail = df_risk.set_index("fips").to_dict("index")
     enriched = []
     for feat in geojson["features"]:
         fips = feat["id"]
@@ -154,8 +295,10 @@ def enrich_geojson(geojson: dict, df: pd.DataFrame) -> dict:
     return {"type": "FeatureCollection", "features": enriched}
 
 
-def build_map(df: pd.DataFrame, geojson: dict) -> folium.Map:
-    # ── 1. Satellite base map ──────────────────────────────────────────────────
+def build_map(layer_name: str, heat_pts: list, geojson: dict, df_risk: pd.DataFrame) -> folium.Map:
+    meta = LAYER_META[layer_name]
+
+    # Satellite base
     m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles=None)
     folium.TileLayer(
         tiles=ESRI_SATELLITE,
@@ -164,52 +307,55 @@ def build_map(df: pd.DataFrame, geojson: dict) -> folium.Map:
         max_zoom=19,
     ).add_to(m)
 
-    # ── 2. Continuous risk heatmap (weather-radar style) ──────────────────────
-    county_scores = tuple(zip(df["county"], df["composite_risk_score"]))
-    heat_data = generate_heatmap_data(county_scores)
-    HeatMap(
-        heat_data,
-        radius=52,
-        blur=42,
-        gradient=HEATMAP_GRADIENT,
-        min_opacity=0.45,
-        max_zoom=12,
-    ).add_to(m)
+    # Event-based heatmap (radar style)
+    if heat_pts:
+        HeatMap(
+            heat_pts,
+            radius=meta["radius"],
+            blur=meta["blur"],
+            gradient=RADAR_GRADIENT,
+            min_opacity=0.0,
+            max_zoom=14,
+        ).add_to(m)
 
-    # ── 3. Transparent county borders + hover tooltips ─────────────────────────
-    rich_geojson = enrich_geojson(geojson, df)
+    # Thin white county borders + hover tooltips
+    rich = enrich_geojson(geojson, df_risk)
     folium.GeoJson(
-        rich_geojson,
+        rich,
         style_function=lambda _: {
             "fillColor": "transparent",
             "fillOpacity": 0.0,
-            "color": "rgba(255,255,255,0.35)",
-            "weight": 1.0,
+            "color": "rgba(255,255,255,0.30)",
+            "weight": 0.8,
         },
         tooltip=folium.GeoJsonTooltip(
             fields=["County", "Risk Score", "Storms", "Flood Zone", "Sea Level 2100"],
-            aliases=["County:", "Risk Score:", "Storms (since 1950):", "FEMA Flood Zone:", "Sea Level Rise 2100:"],
+            aliases=["County:", "Composite Risk:", "Storms (1950+):", "FEMA SFHA:", "Sea Level 2100:"],
             sticky=True,
             style=(
-                "font-family: sans-serif; font-size: 13px;"
-                "background: rgba(10,10,10,0.82); color: #fff;"
-                "border: none; border-radius: 6px; padding: 8px 12px;"
+                "font-family:sans-serif;font-size:13px;"
+                "background:rgba(10,10,10,0.85);color:#fff;"
+                "border:none;border-radius:6px;padding:8px 12px;"
             ),
         ),
     ).add_to(m)
 
-    # ── 4. Legend ──────────────────────────────────────────────────────────────
-    legend_html = """
+    # Legend
+    legend_html = f"""
     <div style="position:fixed;bottom:40px;left:40px;z-index:1000;
-                background:rgba(10,10,10,0.78);color:#fff;
+                background:rgba(10,10,10,0.82);color:#fff;
                 padding:12px 16px;border-radius:8px;
-                font-family:sans-serif;font-size:12px;line-height:1.8;">
-        <b style="font-size:13px;">Composite Risk Score</b><br>
-        <span style="background:#CC0000;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;8–10&nbsp;&nbsp;Critical<br>
-        <span style="background:#FF3300;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;6–8&nbsp;&nbsp;&nbsp;High<br>
-        <span style="background:#FF8800;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;4–6&nbsp;&nbsp;&nbsp;Elevated<br>
-        <span style="background:#FFDD00;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;2–4&nbsp;&nbsp;&nbsp;Moderate<br>
-        <span style="background:#22CC44;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;0–2&nbsp;&nbsp;&nbsp;Low
+                font-family:sans-serif;font-size:12px;line-height:1.9;">
+        <b style="font-size:13px;">{layer_name}</b><br>
+        <span style="color:#aaa;font-size:11px;">{meta['label']}</span><br>
+        <hr style="border-color:rgba(255,255,255,0.2);margin:6px 0;">
+        <span style="background:#AA0000;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;Extreme<br>
+        <span style="background:#FF2200;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;High<br>
+        <span style="background:#FF8800;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;Elevated<br>
+        <span style="background:#FFFF00;padding:2px 10px;border-radius:2px;color:#000">&nbsp;</span>&nbsp;Moderate<br>
+        <span style="background:#00FF88;padding:2px 10px;border-radius:2px;color:#000">&nbsp;</span>&nbsp;Low<br>
+        <span style="background:#00CCFF;padding:2px 10px;border-radius:2px;">&nbsp;</span>&nbsp;Minimal<br>
+        <span style="color:#aaa;font-size:10px;">No color = no events</span>
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -220,40 +366,68 @@ def build_map(df: pd.DataFrame, geojson: dict) -> folium.Map:
 
 st.set_page_config(page_title="TerraRisk", layout="wide")
 st.title("TerraRisk — Florida Climate Risk Intelligence")
-st.caption("Composite county-level hazard exposure for insurance underwriters and real estate investors.")
+st.caption("Event-based hazard maps for insurance underwriters and real estate investors.")
 
-if not os.path.exists(RISK_CSV):
+if not os.path.exists(PATHS["risk"]):
     st.error(
-        "Risk score data not found. Run the data pipeline first:\n\n"
+        "Risk score data not found. Run the full pipeline first:\n\n"
         "```\n"
         "python src/fetch_hurricanes.py\n"
         "python src/fetch_flood_zones.py\n"
         "python src/fetch_sealevel.py\n"
+        "python src/fetch_tornadoes.py\n"
+        "python src/fetch_sinkholes.py\n"
         "python src/build_risk_score.py\n"
         "```"
     )
     st.stop()
 
-df = load_risk_data()
+dfs = load_all_data()
+df_risk = dfs["risk"]
+df_risk["fips"] = df_risk["county"].map(FLORIDA_FIPS)
+
 geojson = load_florida_geojson()
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Counties Scored", len(df))
-col2.metric("Avg Risk Score", f"{df['composite_risk_score'].mean():.2f}")
-col3.metric(
-    "Highest Risk",
-    f"{df.loc[df['composite_risk_score'].idxmax(), 'county']} ({df['composite_risk_score'].max():.1f})",
+# ── Metrics row ────────────────────────────────────────────────────────────────
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Counties Scored", len(df_risk))
+col2.metric("Avg Risk Score", f"{df_risk['composite_risk_score'].mean():.2f}")
+col3.metric("Highest Risk", f"{df_risk.loc[df_risk['composite_risk_score'].idxmax(), 'county']} ({df_risk['composite_risk_score'].max():.1f})")
+col4.metric("Hurricane Tracks", f"{len(dfs['hurricanes']):,}" if not dfs["hurricanes"].empty else "—")
+col5.metric("Tornado Events", f"{len(dfs['tornadoes']):,}" if not dfs["tornadoes"].empty else "—")
+
+# ── Layer toggle ───────────────────────────────────────────────────────────────
+layer = st.radio(
+    "**Risk Layer**",
+    options=LAYER_CHOICES,
+    horizontal=True,
+    label_visibility="collapsed",
 )
-col4.metric("Total Storms", int(df["storm_count"].sum()))
 
-st.subheader("Florida County Composite Risk Map")
-risk_map = build_map(df, geojson)
-st_folium(risk_map, width=None, height=600)
+# ── Map ────────────────────────────────────────────────────────────────────────
+meta = LAYER_META[layer]
+builder_fn = meta["fn"]
 
+if layer == "Overall Risk":
+    heat_pts = combined_points(dfs)
+else:
+    key_map = {
+        "Hurricane Tracks": "hurricanes",
+        "Tornadoes":        "tornadoes",
+        "Sinkholes":        "sinkholes",
+        "Flood Zones":      "flood",
+        "Sea Level Rise":   "sealevel",
+    }
+    heat_pts = builder_fn(dfs[key_map[layer]])
+
+risk_map = build_map(layer, heat_pts, geojson, df_risk)
+st_folium(risk_map, width=None, height=620)
+
+# ── Data table ─────────────────────────────────────────────────────────────────
 with st.expander("County Risk Score Table"):
     st.dataframe(
-        df[["county", "composite_risk_score", "hurricane_score", "flood_score", "sealevel_score",
-            "storm_count", "sfha_pct", "slr_2100_m"]]
+        df_risk[["county", "composite_risk_score", "hurricane_score", "flood_score",
+                 "sealevel_score", "storm_count", "sfha_pct", "slr_2100_m"]]
         .sort_values("composite_risk_score", ascending=False)
         .reset_index(drop=True)
         .rename(columns={
@@ -269,4 +443,7 @@ with st.expander("County Risk Score Table"):
         hide_index=True,
     )
 
-st.caption("Sources: NOAA HURDAT2 | FEMA NFHL | IPCC AR6 Intermediate Scenario | Esri World Imagery")
+st.caption(
+    "Sources: NOAA HURDAT2 · NOAA SPC Tornado Database · Florida Geological Survey · "
+    "FEMA NFHL · NOAA Tide Gauges · IPCC AR6 · Esri World Imagery"
+)
