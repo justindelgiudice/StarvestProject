@@ -16,13 +16,3 @@ Data directories:
 - `data/processed/`: derived and analytics-ready outputs
 
 Dependencies are managed in `requirements.txt`.
-
-## Running the pipeline
-
-```bash
-python src/fetch_hurricanes.py
-python src/fetch_flood_zones.py
-python src/fetch_sealevel.py
-python src/build_risk_score.py
-streamlit run dashboard/app.py
-```

@@ -1,316 +1,218 @@
+"""
+TerraRisk — Florida Climate Risk Intelligence Dashboard
+Shows a Florida county choropleth colored by composite climate risk score.
+"""
+
+import os
 import json
+import requests
 import pandas as pd
+import folium
 import streamlit as st
-import plotly.graph_objects as go
-from pathlib import Path
-from datetime import datetime
+from streamlit_folium import st_folium
 
-DATA = Path(__file__).parent.parent / "data" / "processed"
-RAW  = Path(__file__).parent.parent / "data" / "raw"
+RISK_CSV = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "processed", "county_risk_scores.csv")
+)
 
-st.set_page_config(page_title="Starvest", page_icon="🏠", layout="wide", initial_sidebar_state="collapsed")
+FLORIDA_GEOJSON_URL = (
+    "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
+)
 
-st.markdown("""
-<style>
-  [data-testid="stAppViewContainer"] { background: #f8fafc; }
-  [data-testid="stHeader"]           { background: #f8fafc; }
-  .block-container { padding: 1.5rem 2.5rem 2rem; max-width: 1400px; }
-  .kpi-card { background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-              padding:1.2rem 1.4rem;box-shadow:0 1px 3px rgba(0,0,0,.06); }
-  .kpi-label { color:#64748b;font-size:.72rem;text-transform:uppercase;
-               letter-spacing:.08em;margin-bottom:.4rem; }
-  .kpi-value { color:#0f172a;font-size:1.55rem;font-weight:700;line-height:1.1; }
-  .kpi-sub   { color:#94a3b8;font-size:.74rem;margin-top:.3rem; }
-  .section-title { color:#64748b;font-size:.78rem;text-transform:uppercase;
-                   letter-spacing:.1em;margin-bottom:.5rem;margin-top:.2rem; }
-  .panel-card { background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-                padding:1.3rem 1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.06); }
-  .signal-heating { color:#16a34a;font-weight:700; }
-  .signal-cooling  { color:#dc2626;font-weight:700; }
-  .signal-stable  { color:#d97706;font-weight:700; }
-  #MainMenu { visibility:hidden; } footer { visibility:hidden; }
-</style>
-""", unsafe_allow_html=True)
-
-CHART_CFG = {"displayModeBar": "hover", "displaylogo": False}
-METRO_COLORS = {
-    "Miami":           "#f97316",
-    "Tampa":           "#2563eb",
-    "Orlando":         "#16a34a",
-    "Jacksonville":    "#7c3aed",
-    "Fort Lauderdale": "#0891b2",
+# FIPS codes for Florida counties (state FIPS 12)
+FLORIDA_FIPS = {
+    "Alachua": "12001", "Baker": "12003", "Bay": "12005", "Bradford": "12007",
+    "Brevard": "12009", "Broward": "12011", "Calhoun": "12013", "Charlotte": "12015",
+    "Citrus": "12017", "Clay": "12019", "Collier": "12021", "Columbia": "12023",
+    "DeSoto": "12027", "Dixie": "12029", "Duval": "12031", "Escambia": "12033",
+    "Flagler": "12035", "Franklin": "12037", "Gadsden": "12039", "Gilchrist": "12041",
+    "Glades": "12043", "Gulf": "12045", "Hamilton": "12047", "Hardee": "12049",
+    "Hendry": "12051", "Hernando": "12053", "Highlands": "12055", "Hillsborough": "12057",
+    "Holmes": "12059", "Indian River": "12061", "Jackson": "12063", "Jefferson": "12065",
+    "Lafayette": "12067", "Lake": "12069", "Lee": "12071", "Leon": "12073",
+    "Levy": "12075", "Liberty": "12077", "Madison": "12079", "Manatee": "12081",
+    "Marion": "12083", "Martin": "12085", "Miami-Dade": "12086", "Monroe": "12087",
+    "Nassau": "12089", "Okaloosa": "12091", "Okeechobee": "12093", "Orange": "12095",
+    "Osceola": "12097", "Palm Beach": "12099", "Pasco": "12101", "Pinellas": "12103",
+    "Polk": "12105", "Putnam": "12107", "St. Johns": "12109", "St. Lucie": "12111",
+    "Santa Rosa": "12113", "Sarasota": "12115", "Seminole": "12117", "Sumter": "12119",
+    "Suwannee": "12121", "Taylor": "12123", "Union": "12125", "Volusia": "12127",
+    "Wakulla": "12129", "Walton": "12131", "Washington": "12133",
 }
-SIGNAL_COLOR = {"heating": "#16a34a", "cooling": "#dc2626", "stable": "#d97706"}
 
-def gap():
-    st.markdown('<div style="margin-top:1.6rem;"></div>', unsafe_allow_html=True)
-
-def hint(text: str):
-    st.markdown(
-        f'<p style="color:#94a3b8;font-size:.73rem;line-height:1.5;margin-top:.35rem;">{text}</p>',
-        unsafe_allow_html=True,
-    )
-
-# ── HEADER ────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div style="display:flex;flex-direction:column;align-items:flex-start;gap:0;line-height:1;margin-bottom:.5rem;">
-  <span style="font-size:2rem;font-weight:800;color:#0f172a;letter-spacing:-.03em;">Starvest</span>
-  <p style="color:#64748b;font-size:.82rem;margin:3px 0 1px 0;">
-    Satellite Construction Signals for Florida Real Estate</p>
-  <p style="color:#94a3b8;font-size:.75rem;margin:0;">
-    Sentinel-2 NDBI &nbsp;|&nbsp; Census Building Permits &nbsp;|&nbsp; Zillow ZHVI</p>
-</div>
-""", unsafe_allow_html=True)
-st.markdown("<hr style='border-color:#e2e8f0;margin:.8rem 0 1.2rem;'/>", unsafe_allow_html=True)
-
-# ── LOAD DATA ────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def load_zhvi():
-    path = RAW / "zhvi_raw.csv"
-    if not path.exists():
-        return None
-    return pd.read_csv(path, parse_dates=["date"])
 
 @st.cache_data(ttl=3600)
-def load_dataset():
-    path = DATA / "dataset.csv"
-    if not path.exists():
-        return None
-    return pd.read_csv(path)
+def load_florida_geojson():
+    resp = requests.get(FLORIDA_GEOJSON_URL, timeout=30)
+    resp.raise_for_status()
+    all_counties = resp.json()
+    florida_fips_set = set(FLORIDA_FIPS.values())
+    florida_features = [
+        f for f in all_counties["features"]
+        if f["id"] in florida_fips_set
+    ]
+    return {"type": "FeatureCollection", "features": florida_features}
 
-@st.cache_data(ttl=3600)
-def load_signals():
-    path = DATA / "signals.csv"
-    if not path.exists():
-        return None
-    return pd.read_csv(path)
 
-@st.cache_data(ttl=3600)
-def load_model_params():
-    path = DATA / "model_params.json"
-    if not path.exists():
-        return None
-    with open(path) as f:
-        return json.load(f)
+@st.cache_data
+def load_risk_data():
+    df = pd.read_csv(RISK_CSV)
+    fips_map = FLORIDA_FIPS
+    df["fips"] = df["county"].map(fips_map)
+    return df
 
-zhvi    = load_zhvi()
-dataset = load_dataset()
-signals = load_signals()
-params  = load_model_params()
 
-# ── HOW IT WORKS ──────────────────────────────────────────────────────────────
-st.markdown("""
-<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;
-            padding:1.1rem 1.4rem;margin-bottom:1rem;">
-  <div style="color:#15803d;font-size:.7rem;font-weight:700;text-transform:uppercase;
-              letter-spacing:.1em;margin-bottom:.7rem;">The Informational Edge</div>
-  <div style="display:grid;grid-template-columns:1fr 24px 1fr 24px 1fr;gap:.3rem;align-items:center;margin-bottom:.65rem;">
-    <div style="background:#fff;border:1px solid #bbf7d0;border-radius:8px;padding:.75rem 1rem;">
-      <div style="color:#15803d;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.25rem;">① Sentinel-2 Satellite</div>
-      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">NDBI · every 5–16 days</div>
-      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Detects built-up area and bare soil expansion across FL metro bounding boxes — a leading proxy for construction activity.</div>
-    </div>
-    <div style="color:#94a3b8;font-size:1.1rem;text-align:center;">→</div>
-    <div style="background:#fff;border:1px solid #bbf7d0;border-radius:8px;padding:.75rem 1rem;">
-      <div style="color:#15803d;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.25rem;">② Construction Signal</div>
-      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">Permits + NDBI combined</div>
-      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Census permit counts confirm satellite signals. Together they quantify new supply entering the market 12–24 months ahead of closing data.</div>
-    </div>
-    <div style="color:#94a3b8;font-size:1.1rem;text-align:center;">→</div>
-    <div style="background:#fff;border:1px solid #bbf7d0;border-radius:8px;padding:.75rem 1rem;">
-      <div style="color:#15803d;font-size:.65rem;font-weight:700;text-transform:uppercase;margin-bottom:.25rem;">③ Price Forecast</div>
-      <div style="color:#0f172a;font-size:.8rem;font-weight:600;margin-bottom:.2rem;">Heating / Stable / Cooling</div>
-      <div style="color:#64748b;font-size:.7rem;line-height:1.4;">Model predicts 4-quarter forward ZHVI change per metro. Signal leads official Case-Shiller / Zillow reports by 1–2 quarters.</div>
-    </div>
-  </div>
-  <p style="color:#166534;font-size:.71rem;margin:0;line-height:1.45;">
-    <b>Timing edge:</b> Satellite revisit every 5–16 days vs. closing-based home price indices with 1–2 month publication lags.
-    Construction ramp-up visible in NDBI 12–24 months before the supply hits the market and affects prices.
-  </p>
-</div>
-""", unsafe_allow_html=True)
+def risk_color(score: float) -> str:
+    if score >= 7.5:
+        return "#d73027"
+    elif score >= 6.0:
+        return "#f46d43"
+    elif score >= 4.5:
+        return "#fdae61"
+    elif score >= 3.0:
+        return "#fee090"
+    elif score >= 1.5:
+        return "#e0f3f8"
+    else:
+        return "#abd9e9"
 
-# ── ZHVI TIME SERIES (primary view) ──────────────────────────────────────────
-if zhvi is not None:
-    st.markdown('<p class="section-title">Home Value Index by Metro (Zillow ZHVI)</p>', unsafe_allow_html=True)
 
-    metros = sorted(zhvi["metro"].unique())
+def build_map(df: pd.DataFrame, geojson: dict) -> folium.Map:
+    risk_lookup = dict(zip(df["fips"], df["composite_risk_score"]))
+    detail_lookup = df.set_index("fips").to_dict("index")
 
-    fig = go.Figure()
-    for metro in metros:
-        sub = zhvi[zhvi["metro"] == metro].sort_values("date")
-        fig.add_scatter(
-            x=sub["date"], y=sub["zhvi"],
-            mode="lines", name=metro,
-            line=dict(color=METRO_COLORS.get(metro, "#94a3b8"), width=2.5),
-            hovertemplate=f"<b>{metro}</b><br>%{{x|%b %Y}}<br>ZHVI: $%{{y:,.0f}}<extra></extra>",
+    m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles="CartoDB positron")
+
+    def style_fn(feature):
+        fips = feature["id"]
+        score = risk_lookup.get(fips, 0)
+        return {
+            "fillColor": risk_color(score),
+            "color": "#555555",
+            "weight": 0.8,
+            "fillOpacity": 0.75,
+        }
+
+    def tooltip_fn(feature):
+        fips = feature["id"]
+        d = detail_lookup.get(fips, {})
+        score = risk_lookup.get(fips, 0)
+        county = d.get("county", fips)
+        storms = d.get("storm_count", "—")
+        flood = d.get("sfha_pct", "—")
+        slr = d.get("slr_2100_m", "—")
+        return folium.Tooltip(
+            f"<b>{county} County</b><br>"
+            f"Composite Risk: <b>{score:.1f} / 10</b><br>"
+            f"Storms (since 1950): {storms}<br>"
+            f"FEMA Flood Zone: {flood}%<br>"
+            f"Sea Level Rise (2100): {slr}m",
+            sticky=True,
         )
 
-    fig.update_layout(
-        height=420, paper_bgcolor="#fff", plot_bgcolor="#fff",
-        font=dict(color="#475569", size=11),
-        margin=dict(t=10, b=30, l=10, r=10),
-        hovermode="x unified",
-        yaxis=dict(tickprefix="$", gridcolor="#e2e8f0", linecolor="#e2e8f0"),
-        xaxis=dict(gridcolor="#e2e8f0", linecolor="#e2e8f0"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155", font=dict(color="#f1f5f9", size=11)),
+    folium.GeoJson(
+        geojson,
+        style_function=style_fn,
+        tooltip=folium.GeoJsonTooltip(
+            fields=[],
+            aliases=[],
+        ),
+    ).add_to(m)
+
+    # Re-add with custom tooltip by iterating features
+    for feature in geojson["features"]:
+        fips = feature["id"]
+        d = detail_lookup.get(fips, {})
+        score = risk_lookup.get(fips, 0)
+        county = d.get("county", fips)
+        storms = int(d.get("storm_count", 0))
+        flood = d.get("sfha_pct", 0)
+        slr = d.get("slr_2100_m", 0)
+
+        folium.GeoJson(
+            feature,
+            style_function=lambda f, s=score: {
+                "fillColor": risk_color(s),
+                "color": "#555555",
+                "weight": 0.8,
+                "fillOpacity": 0.75,
+            },
+            tooltip=folium.Tooltip(
+                f"<b>{county} County</b><br>"
+                f"Composite Risk: <b>{score:.1f} / 10</b><br>"
+                f"Storms since 1950: {storms}<br>"
+                f"FEMA Flood Zone: {flood}%<br>"
+                f"Sea Level Rise 2100: {slr}m",
+                sticky=True,
+            ),
+        ).add_to(m)
+
+    # Legend
+    legend_html = """
+    <div style="position: fixed; bottom: 40px; left: 40px; z-index: 1000; background: white;
+                padding: 12px 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                font-family: sans-serif; font-size: 13px;">
+        <b>Composite Risk Score</b><br>
+        <span style="background:#d73027;padding:2px 10px;">&nbsp;</span> 7.5–10 &nbsp;Critical<br>
+        <span style="background:#f46d43;padding:2px 10px;">&nbsp;</span> 6.0–7.5 &nbsp;High<br>
+        <span style="background:#fdae61;padding:2px 10px;">&nbsp;</span> 4.5–6.0 &nbsp;Elevated<br>
+        <span style="background:#fee090;padding:2px 10px;">&nbsp;</span> 3.0–4.5 &nbsp;Moderate<br>
+        <span style="background:#e0f3f8;padding:2px 10px;">&nbsp;</span> 1.5–3.0 &nbsp;Low<br>
+        <span style="background:#abd9e9;padding:2px 10px;">&nbsp;</span> 0–1.5 &nbsp;&nbsp;&nbsp;Minimal
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
+    return m
+
+
+# ── Streamlit UI ──────────────────────────────────────────────────────────────
+
+st.set_page_config(page_title="TerraRisk", layout="wide")
+st.title("TerraRisk — Florida Climate Risk Intelligence")
+st.caption("Composite county-level hazard exposure for insurance underwriters and real estate investors.")
+
+if not os.path.exists(RISK_CSV):
+    st.error(
+        "Risk score data not found. Run the data pipeline first:\n\n"
+        "```\n"
+        "python src/fetch_hurricanes.py\n"
+        "python src/fetch_flood_zones.py\n"
+        "python src/fetch_sealevel.py\n"
+        "python src/build_risk_score.py\n"
+        "```"
     )
-    st.plotly_chart(fig, use_container_width=True, config=CHART_CFG)
-    hint("Zillow Home Value Index (ZHVI): smoothed, seasonally adjusted median home value for all homes (SFR + condo). Middle tier (33rd–67th percentile).")
+    st.stop()
 
-    gap()
+df = load_risk_data()
+geojson = load_florida_geojson()
 
-    # ── KPI cards (latest ZHVI values) ───────────────────────────────────────
-    cols = st.columns(len(metros), gap="small")
-    for col, metro in zip(cols, metros):
-        sub    = zhvi[zhvi["metro"] == metro].sort_values("date")
-        latest = sub.iloc[-1]
-        yoy_df = sub[sub["date"] >= latest["date"] - pd.DateOffset(years=1)]
-        yoy    = (latest["zhvi"] / yoy_df.iloc[0]["zhvi"] - 1) * 100 if len(yoy_df) > 1 else float("nan")
-        arrow  = "▲" if yoy > 0 else "▼"
-        color  = "#16a34a" if yoy > 0 else "#dc2626"
-        col.markdown(f"""<div class="kpi-card">
-  <div class="kpi-label">{metro}</div>
-  <div class="kpi-value">${latest['zhvi']:,.0f}</div>
-  <div class="kpi-sub" style="color:{color};">{arrow} {abs(yoy):.1f}% YoY</div>
-</div>""", unsafe_allow_html=True)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Counties Scored", len(df))
+col2.metric("Avg Risk Score", f"{df['composite_risk_score'].mean():.2f}")
+col3.metric("Highest Risk", f"{df.loc[df['composite_risk_score'].idxmax(), 'county']} ({df['composite_risk_score'].max():.1f})")
+col4.metric("Total Storms", int(df["storm_count"].sum()))
 
-    gap()
+st.subheader("Florida County Composite Risk Map")
+risk_map = build_map(df, geojson)
+st_folium(risk_map, width=None, height=580)
 
-    # ── YoY change chart ─────────────────────────────────────────────────────
-    st.markdown('<p class="section-title">Year-over-Year Home Price Change (%)</p>', unsafe_allow_html=True)
-    fig2 = go.Figure()
-    for metro in metros:
-        sub = zhvi[zhvi["metro"] == metro].sort_values("date").copy()
-        sub["yoy"] = sub["zhvi"].pct_change(12) * 100
-        sub = sub.dropna(subset=["yoy"])
-        fig2.add_scatter(
-            x=sub["date"], y=sub["yoy"],
-            mode="lines", name=metro,
-            line=dict(color=METRO_COLORS.get(metro, "#94a3b8"), width=2),
-            hovertemplate=f"<b>{metro}</b><br>%{{x|%b %Y}}<br>YoY: %{{y:+.1f}}%<extra></extra>",
-        )
-    fig2.add_hline(y=0, line_color="#94a3b8", line_dash="dot")
-    fig2.update_layout(
-        height=360, paper_bgcolor="#fff", plot_bgcolor="#fff",
-        font=dict(color="#475569", size=11),
-        margin=dict(t=10, b=30, l=10, r=10),
-        hovermode="x unified",
-        yaxis=dict(ticksuffix="%", gridcolor="#e2e8f0", linecolor="#e2e8f0"),
-        xaxis=dict(gridcolor="#e2e8f0", linecolor="#e2e8f0"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155", font=dict(color="#f1f5f9", size=11)),
+with st.expander("County Risk Score Table"):
+    st.dataframe(
+        df[["county", "composite_risk_score", "hurricane_score", "flood_score", "sealevel_score",
+            "storm_count", "sfha_pct", "slr_2100_m"]]
+        .sort_values("composite_risk_score", ascending=False)
+        .reset_index(drop=True)
+        .rename(columns={
+            "composite_risk_score": "Composite (0-10)",
+            "hurricane_score": "Hurricane",
+            "flood_score": "Flood Zone",
+            "sealevel_score": "Sea Level",
+            "storm_count": "Storms",
+            "sfha_pct": "SFHA %",
+            "slr_2100_m": "SLR 2100 (m)",
+        }),
+        use_container_width=True,
+        hide_index=True,
     )
-    st.plotly_chart(fig2, use_container_width=True, config=CHART_CFG)
-    hint("Year-over-year % change in Zillow ZHVI. Positive = home values rising vs. same month prior year.")
 
-else:
-    st.info("📥 Run `python src/fetch_home_prices.py` to load Zillow ZHVI data.")
-
-gap()
-
-# ── MODEL SIGNALS (once pipeline is trained) ──────────────────────────────────
-if signals is not None and params is not None:
-    st.markdown('<p class="section-title">Market Signals — Satellite + Permit Model</p>', unsafe_allow_html=True)
-
-    latest_q   = signals["quarter"].max()
-    latest_sig = signals[signals["quarter"] == latest_q]
-    sig_cols   = st.columns(len(latest_sig), gap="small")
-
-    for col, (_, row) in zip(sig_cols, latest_sig.iterrows()):
-        sig   = row["signal"]
-        color = SIGNAL_COLOR.get(sig, "#64748b")
-        col.markdown(f"""<div class="kpi-card">
-  <div class="kpi-label">{row['metro']}</div>
-  <div class="kpi-value" style="color:{color};font-size:1.1rem;">{sig.capitalize()}</div>
-  <div class="kpi-sub">{row['predicted_zhvi_fwd']:+.1f}% fwd 4Q · {latest_q}</div>
-</div>""", unsafe_allow_html=True)
-
-    gap()
-    col_l, col_r = st.columns([2, 1], gap="medium")
-    with col_l:
-        st.markdown('<p class="section-title">Predicted vs Actual Forward ZHVI Change</p>', unsafe_allow_html=True)
-        fig3 = go.Figure()
-        for metro in signals["metro"].unique():
-            sub = signals[signals["metro"] == metro].sort_values("quarter")
-            fig3.add_scatter(x=sub["quarter"], y=sub["actual_zhvi_fwd"],
-                             mode="lines+markers", name=f"{metro} (actual)",
-                             line=dict(color=METRO_COLORS.get(metro, "#94a3b8"), width=2))
-            fig3.add_scatter(x=sub["quarter"], y=sub["predicted_zhvi_fwd"],
-                             mode="lines+markers", name=f"{metro} (predicted)",
-                             line=dict(color=METRO_COLORS.get(metro, "#94a3b8"), width=1.5, dash="dash"))
-        fig3.update_layout(height=380, paper_bgcolor="#fff", plot_bgcolor="#fff",
-                            font=dict(color="#475569", size=11), margin=dict(t=10, b=30, l=10, r=10),
-                            yaxis=dict(ticksuffix="%", gridcolor="#e2e8f0"),
-                            xaxis=dict(gridcolor="#e2e8f0"))
-        st.plotly_chart(fig3, use_container_width=True, config=CHART_CFG)
-
-    with col_r:
-        da  = params.get("directional_accuracy", 0)
-        r2  = params.get("r2_backtest", 0)
-        mae = params.get("mae_backtest", 0)
-        r2_color = "#16a34a" if r2 >= 0.5 else "#d97706" if r2 >= 0.3 else "#dc2626"
-        st.markdown(f"""<div class="panel-card">
-  <div style="color:#15803d;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.9rem;">Model Performance</div>
-  <div style="display:flex;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid #e2e8f0;">
-    <span style="color:#64748b;font-size:.8rem;">Directional Accuracy</span>
-    <span style="color:#2563eb;font-size:.85rem;font-weight:600;">{da:.0%}</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid #e2e8f0;">
-    <span style="color:#64748b;font-size:.8rem;">R² (backtest)</span>
-    <span style="color:{r2_color};font-size:.85rem;font-weight:600;">{r2:.2f}</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid #e2e8f0;">
-    <span style="color:#64748b;font-size:.8rem;">MAE</span>
-    <span style="color:#2563eb;font-size:.85rem;font-weight:600;">{mae:.1f} pp</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;padding:.45rem 0;">
-    <span style="color:#64748b;font-size:.8rem;">Backtest Quarters</span>
-    <span style="color:#2563eb;font-size:.85rem;font-weight:600;">{params.get('n_backtest_quarters', '—')}</span>
-  </div>
-  <p style="color:#94a3b8;font-size:.7rem;line-height:1.5;margin-top:.8rem;border-top:1px solid #e2e8f0;padding-top:.6rem;">
-    Directional accuracy = % of quarters model correctly predicted whether ZHVI rose or fell over the following year.
-  </p>
-</div>""", unsafe_allow_html=True)
-
-else:
-    st.info("📊 Run the full pipeline (fetch_satellite → fetch_permits → build_dataset → model → backtest) to see market signals.")
-
-gap()
-
-with st.expander("📖 Methodology & Data Sources"):
-    st.markdown("""
-**Core Thesis**
-
-Residential construction takes 12–24 months from permit issuance to market impact on home prices.
-Satellite imagery (Sentinel-2, 5–16 day revisit) detects built-up area expansion and bare-soil
-disturbance *before* permits even appear in Census data — providing the earliest possible
-quantitative signal on new housing supply entering each market.
-
-**Pipeline**
-
-| Step | Script | Output |
-|------|--------|--------|
-| Sentinel-2 NDBI / BSI | `fetch_satellite.py` | `data/raw/satellite_raw.csv` |
-| Census building permits | `fetch_permits.py` | `data/raw/permits_raw.csv` |
-| Zillow ZHVI | `fetch_home_prices.py` | `data/raw/zhvi_raw.csv` |
-| Merge + features | `build_dataset.py` | `data/processed/dataset.csv` |
-| Train model | `model.py` | `data/processed/model_params.json` |
-| Backtest | `backtest.py` | `data/processed/signals.csv` |
-
-**Satellite Indices**
-- **NDBI** (Normalized Difference Built-up Index) = (SWIR − NIR) / (SWIR + NIR). Positive = artificial surfaces.
-  Quarter-over-quarter NDBI *change* captures construction ramp-up.
-- **BSI** (Bare Soil Index) captures graded/cleared land ahead of construction — a leading indicator even earlier than NDBI.
-
-**Model**
-Ridge regression: NDBI change + BSI change + permits YoY + ZHVI momentum → 4-quarter forward ZHVI % change.
-Walk-forward backtest: each quarter trained only on prior quarters. Min 8 training quarters before first prediction.
-
-**Limitations**
-- Satellite indices are affected by cloud cover, seasonal vegetation, and land use changes unrelated to housing.
-- Permits are issued months before construction begins; cancellation rates vary by cycle.
-- ZHVI is a model-based estimate, not a transaction price index — it smooths out volatility.
-- Florida-specific risks: hurricane seasons, insurance cost shocks, migration flows are not modeled.
-""")
+st.caption("Sources: NOAA HURDAT2 | FEMA NFHL | IPCC AR6 Intermediate Scenario")

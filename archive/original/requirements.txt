@@ -1,0 +1,9 @@
+earthengine-api
+pandas
+numpy
+scikit-learn
+streamlit
+plotly
+requests
+certifi
+python-dotenv

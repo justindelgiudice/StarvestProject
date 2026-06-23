@@ -1,0 +1,34 @@
+# Environment & secrets
+.env
+*.key
+*.pem
+credentials.json
+service_account.json
+ee_credentials
+~/.config/earthengine/
+
+# Data (raw data can be large; processed outputs are reproducible)
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+dist/
+build/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
