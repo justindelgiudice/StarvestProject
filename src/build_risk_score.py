@@ -1,24 +1,28 @@
 """
-Combine hurricane, flood zone, and sea level rise data into a composite risk score (0-10)
-per Florida county. Weights: hurricane 40%, flood zone 35%, sea level 25%.
+Combine hurricane, flood zone, sea level rise, tornado, and wildfire data
+into a composite risk score (0-10) per Florida county.
+
+Weights:  Hurricane 35% · Flood 30% · Sea Level 20% · Tornado 10% · Wildfire 5%
+
 Saves to data/processed/county_risk_scores.csv.
 """
 
 import csv
+import math
 import os
 
-HURRICANES_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "raw", "hurricanes.csv")
-)
-FLOOD_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "raw", "flood_zones.csv")
-)
-SEALEVEL_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "raw", "sealevel.csv")
-)
-OUTPUT_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "processed", "county_risk_scores.csv")
-)
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+RAW  = os.path.join(ROOT, "data", "raw")
+PROC = os.path.join(ROOT, "data", "processed")
+
+PATHS = {
+    "hurricanes": os.path.join(RAW, "hurricanes.csv"),
+    "flood":      os.path.join(RAW, "flood_zones.csv"),
+    "sealevel":   os.path.join(RAW, "sealevel.csv"),
+    "tornadoes":  os.path.join(RAW, "tornadoes.csv"),
+    "wildfires":  os.path.join(RAW, "wildfires.csv"),
+    "output":     os.path.join(PROC, "county_risk_scores.csv"),
+}
 
 FLORIDA_COUNTIES = [
     "Alachua", "Baker", "Bay", "Bradford", "Brevard", "Broward", "Calhoun",
@@ -33,8 +37,6 @@ FLORIDA_COUNTIES = [
     "Suwannee", "Taylor", "Union", "Volusia", "Wakulla", "Walton", "Washington",
 ]
 
-# Geographic bounding boxes (lat_min, lat_max, lon_min, lon_max) for each county
-# Used to check which hurricane track points fall within or near each county
 COUNTY_CENTROIDS = {
     "Alachua": (29.67, -82.33), "Baker": (30.33, -82.30), "Bay": (30.22, -85.65),
     "Bradford": (29.94, -82.17), "Brevard": (28.26, -80.72), "Broward": (26.07, -80.25),
@@ -61,56 +63,59 @@ COUNTY_CENTROIDS = {
     "Washington": (30.60, -85.67),
 }
 
-WEIGHTS = {"hurricane": 0.40, "flood": 0.35, "sealevel": 0.25}
+WEIGHTS = {
+    "hurricane": 0.35,
+    "flood":     0.30,
+    "sealevel":  0.20,
+    "tornado":   0.10,
+    "wildfire":  0.05,
+}
 
-# Max observed values for normalization
-MAX_STORM_COUNT = 40      # storms within 100mi since 1950
-MAX_MAX_WIND = 175        # knots (Category 5)
-MAX_SFHA_PCT = 60.0       # % of county in SFHA
-MAX_SLR_2100 = 0.85       # meters
+COUNTY_RADIUS_MILES = 75.0
+MAX_STORM_COUNT  = 60.0
+MAX_MAX_WIND     = 175.0
+MAX_SFHA_PCT     = 60.0
+MAX_SLR_2100     = 0.85
+MAX_TORNADO_CNT  = 200.0    # FL county tornado count, historical high ≈ 180
+MAX_FIRE_SCORE   = 200.0    # count × avg_frp normalization ceiling
 
+
+def haversine(lat1, lon1, lat2, lon2) -> float:
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    dphi = math.radians(lat2 - lat1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
+    return 3958.8 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def norm(value: float, max_val: float) -> float:
+    return min(10.0, round(10.0 * value / max_val, 3)) if max_val > 0 else 0.0
+
+
+# ── Loaders ────────────────────────────────────────────────────────────────────
 
 def load_hurricane_stats() -> dict:
-    """Count storms and max wind per county based on proximity to centroid."""
-    import math
-
-    def haversine(lat1, lon1, lat2, lon2):
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        dphi, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
-        return 3958.8 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
     county_storms: dict[str, set] = {c: set() for c in FLORIDA_COUNTIES}
-    county_max_wind: dict[str, float] = {c: 0.0 for c in FLORIDA_COUNTIES}
-    COUNTY_RADIUS_MILES = 75.0
-
-    with open(HURRICANES_PATH, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+    county_wind: dict[str, float]  = {c: 0.0   for c in FLORIDA_COUNTIES}
+    with open(PATHS["hurricanes"], newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
             try:
                 rlat = float(row["latitude"])
                 rlon = float(row["longitude"])
-                wind = float(row["wind_knots"]) if row["wind_knots"] else 0.0
+                wind = float(row["wind_knots"] or 0)
             except (ValueError, KeyError):
                 continue
-
             for county, (clat, clon) in COUNTY_CENTROIDS.items():
                 if haversine(clat, clon, rlat, rlon) <= COUNTY_RADIUS_MILES:
                     county_storms[county].add(row["storm_id"])
-                    county_max_wind[county] = max(county_max_wind[county], wind)
-
-    return {
-        county: {
-            "storm_count": len(storms),
-            "max_wind_knots": county_max_wind[county],
-        }
-        for county, storms in county_storms.items()
-    }
+                    county_wind[county] = max(county_wind[county], wind)
+    return {c: {"storm_count": len(s), "max_wind_knots": county_wind[c]}
+            for c, s in county_storms.items()}
 
 
 def load_flood_stats() -> dict:
     result = {}
-    with open(FLOOD_PATH, newline="", encoding="utf-8") as f:
+    with open(PATHS["flood"], newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             pct = row.get("sfha_pct")
             result[row["county"]] = float(pct) if pct not in (None, "", "None") else 0.0
@@ -119,51 +124,111 @@ def load_flood_stats() -> dict:
 
 def load_sealevel_stats() -> dict:
     result = {}
-    with open(SEALEVEL_PATH, newline="", encoding="utf-8") as f:
+    with open(PATHS["sealevel"], newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             slr = row.get("projected_slr_2100_m")
             result[row["county"]] = float(slr) if slr not in (None, "", "None") else 0.0
     return result
 
 
-def normalize(value: float, max_value: float) -> float:
-    return min(10.0, round(10.0 * value / max_value, 3)) if max_value > 0 else 0.0
+def load_tornado_stats() -> dict:
+    """Count tornado touchdowns within 75 miles of each county centroid."""
+    counts: dict[str, int] = {c: 0 for c in FLORIDA_COUNTIES}
+    if not os.path.exists(PATHS["tornadoes"]):
+        return counts
+    with open(PATHS["tornadoes"], newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                tlat = float(row["latitude"])
+                tlon = float(row["longitude"])
+            except (ValueError, KeyError):
+                continue
+            for county, (clat, clon) in COUNTY_CENTROIDS.items():
+                if haversine(clat, clon, tlat, tlon) <= COUNTY_RADIUS_MILES:
+                    counts[county] += 1
+    return counts
 
+
+def load_wildfire_stats() -> dict:
+    """
+    Compute per-county wildfire intensity score = count × avg_FRP
+    using detections within 75 miles of each county centroid.
+    """
+    counts: dict[str, int]   = {c: 0   for c in FLORIDA_COUNTIES}
+    frp_sum: dict[str, float] = {c: 0.0 for c in FLORIDA_COUNTIES}
+    if not os.path.exists(PATHS["wildfires"]):
+        return {c: {"fire_count": 0, "avg_frp": 0.0} for c in FLORIDA_COUNTIES}
+    with open(PATHS["wildfires"], newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                flat = float(row["latitude"])
+                flon = float(row["longitude"])
+                frp  = float(row["frp"])
+            except (ValueError, KeyError):
+                continue
+            for county, (clat, clon) in COUNTY_CENTROIDS.items():
+                if haversine(clat, clon, flat, flon) <= COUNTY_RADIUS_MILES:
+                    counts[county] += 1
+                    frp_sum[county] += frp
+    return {
+        c: {
+            "fire_count": counts[c],
+            "avg_frp": round(frp_sum[c] / counts[c], 2) if counts[c] > 0 else 0.0,
+        }
+        for c in FLORIDA_COUNTIES
+    }
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("Building composite risk scores...")
-    hurricane_stats = load_hurricane_stats()
-    flood_stats = load_flood_stats()
-    sealevel_stats = load_sealevel_stats()
+    print("Building composite risk scores (5-factor model)...")
+    h_stats = load_hurricane_stats()
+    f_stats = load_flood_stats()
+    s_stats = load_sealevel_stats()
+    t_stats = load_tornado_stats()
+    w_stats = load_wildfire_stats()
 
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    os.makedirs(PROC, exist_ok=True)
     rows = []
 
     for county in FLORIDA_COUNTIES:
-        h = hurricane_stats.get(county, {"storm_count": 0, "max_wind_knots": 0})
-        storm_score = normalize(h["storm_count"], MAX_STORM_COUNT)
-        wind_score = normalize(h["max_wind_knots"], MAX_MAX_WIND)
+        h = h_stats.get(county, {"storm_count": 0, "max_wind_knots": 0})
+        storm_score = norm(h["storm_count"],    MAX_STORM_COUNT)
+        wind_score  = norm(h["max_wind_knots"], MAX_MAX_WIND)
         hurricane_score = round(0.6 * storm_score + 0.4 * wind_score, 3)
 
-        flood_score = normalize(flood_stats.get(county, 0.0), MAX_SFHA_PCT)
-        slr_score = normalize(sealevel_stats.get(county, 0.0), MAX_SLR_2100)
+        flood_score    = norm(f_stats.get(county, 0.0), MAX_SFHA_PCT)
+        sealevel_score = norm(s_stats.get(county, 0.0), MAX_SLR_2100)
+        tornado_score  = norm(t_stats.get(county, 0),   MAX_TORNADO_CNT)
+
+        wf = w_stats.get(county, {"fire_count": 0, "avg_frp": 0.0})
+        fire_intensity  = wf["fire_count"] * wf["avg_frp"] / 1000.0  # scale: count×MW/1000
+        wildfire_score  = norm(fire_intensity, MAX_FIRE_SCORE / 1000.0)
 
         composite = round(
             WEIGHTS["hurricane"] * hurricane_score
-            + WEIGHTS["flood"] * flood_score
-            + WEIGHTS["sealevel"] * slr_score,
+            + WEIGHTS["flood"]    * flood_score
+            + WEIGHTS["sealevel"] * sealevel_score
+            + WEIGHTS["tornado"]  * tornado_score
+            + WEIGHTS["wildfire"] * wildfire_score,
             3,
         )
 
         rows.append({
-            "county": county,
-            "storm_count": h["storm_count"],
-            "max_wind_knots": h["max_wind_knots"],
-            "hurricane_score": hurricane_score,
-            "sfha_pct": flood_stats.get(county, 0.0),
-            "flood_score": flood_score,
-            "slr_2100_m": sealevel_stats.get(county, 0.0),
-            "sealevel_score": slr_score,
+            "county":           county,
+            "storm_count":      h["storm_count"],
+            "max_wind_knots":   h["max_wind_knots"],
+            "hurricane_score":  hurricane_score,
+            "sfha_pct":         f_stats.get(county, 0.0),
+            "flood_score":      flood_score,
+            "slr_2100_m":       s_stats.get(county, 0.0),
+            "sealevel_score":   sealevel_score,
+            "tornado_count":    t_stats.get(county, 0),
+            "tornado_score":    tornado_score,
+            "fire_count":       wf["fire_count"],
+            "avg_frp":          wf["avg_frp"],
+            "wildfire_score":   wildfire_score,
             "composite_risk_score": composite,
         })
 
@@ -171,18 +236,20 @@ def main():
 
     fieldnames = [
         "county", "storm_count", "max_wind_knots", "hurricane_score",
-        "sfha_pct", "flood_score", "slr_2100_m", "sealevel_score", "composite_risk_score",
+        "sfha_pct", "flood_score", "slr_2100_m", "sealevel_score",
+        "tornado_count", "tornado_score", "fire_count", "avg_frp", "wildfire_score",
+        "composite_risk_score",
     ]
-    with open(OUTPUT_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    with open(PATHS["output"], "w", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=fieldnames).writeheader()
+        csv.DictWriter(f, fieldnames=fieldnames).writerows(rows)
 
-    print(f"Saved risk scores for {len(rows)} counties to {OUTPUT_PATH}")
+    print(f"Saved {len(rows)} counties → {PATHS['output']}")
     print("\nTop 10 highest-risk counties:")
     for r in rows[:10]:
         print(f"  {r['county']:20s}  composite={r['composite_risk_score']:.2f}  "
-              f"storms={r['storm_count']}  flood={r['sfha_pct']}%  slr={r['slr_2100_m']}m")
+              f"storms={r['storm_count']}  flood={r['sfha_pct']:.0f}%  "
+              f"tornado={r['tornado_count']}  fires={r['fire_count']}")
 
 
 if __name__ == "__main__":

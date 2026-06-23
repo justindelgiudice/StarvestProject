@@ -81,10 +81,9 @@ COUNTY_CENTROIDS = {
     "Washington": (30.60, -85.67),
 }
 
-NASA_GIBS = (
-    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
-    "MODIS_Terra_CorrectedReflectance_TrueColor/default/2024-01-01/"
-    "GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg"
+ESRI_SATELLITE = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
 
 RADAR_GRADIENT = {
@@ -98,13 +97,14 @@ RADAR_GRADIENT = {
     1.00: "#AA0000",
 }
 
-# Grid column indices for each heatmap layer
+# Grid column for each heatmap layer
 GRID_LAYER_COL = {
     "Overall Risk":     "overall",
     "Hurricane Tracks": "hurricane",
     "Tornadoes":        "tornado",
     "Sinkholes":        "sinkhole",
     "Sea Level Rise":   "sealevel",
+    "Wildfire":         "wildfire",
 }
 
 LAYER_CHOICES = [
@@ -114,15 +114,17 @@ LAYER_CHOICES = [
     "Sinkholes",
     "Flood Zones",
     "Sea Level Rise",
+    "Wildfire",
 ]
 
 LAYER_LABEL = {
-    "Overall Risk":     "Composite of all risk factors",
+    "Overall Risk":     "Composite of all risk factors (5-layer model)",
     "Hurricane Tracks": "Wind speed intensity (knots), 1950–2025",
     "Tornadoes":        "EF scale, NOAA SPC 1950–2023",
     "Sinkholes":        "FGS county reports (synthetic coords)",
     "Flood Zones":      "FEMA NFHL SFHA % by county",
     "Sea Level Rise":   "IPCC AR6 intermediate scenario, 2100",
+    "Wildfire":         "NASA FIRMS MODIS + FFS historical (2000–2023)",
 }
 
 
@@ -225,6 +227,7 @@ def enrich_geojson(
         sfha = flood_by_county.get(county, float(d.get("sfha_pct", 0) or 0))
         slr = float(d.get("slr_2100_m", 0) or 0)
         torns = tornado_counts.get(county, 0)
+        fires = int(d.get("fire_count", 0))
 
         enriched.append({
             **feat,
@@ -236,6 +239,7 @@ def enrich_geojson(
                 "Sea Level 2100":    f"{slr:.2f}m",
                 "Storms (1950+)":    int(d.get("storm_count", 0)),
                 "Tornadoes":         torns,
+                "Wildfire Events":   fires,
                 "_sfha_pct":         sfha,
                 "_score":            score,
             },
@@ -278,11 +282,11 @@ def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
     popup = folium.GeoJsonPopup(
         fields=[
             "County", "Composite Risk", "Hurricane Score",
-            "Flood Zone (SFHA)", "Sea Level 2100", "Storms (1950+)", "Tornadoes",
+            "Flood Zone (SFHA)", "Sea Level 2100", "Storms (1950+)", "Tornadoes", "Wildfire Events",
         ],
         aliases=[
             "County:", "Composite Risk:", "Hurricane Score:",
-            "Flood Zone (SFHA):", "Sea Level Rise 2100:", "Storms (1950+):", "Tornadoes:",
+            "Flood Zone (SFHA):", "Sea Level Rise 2100:", "Storms (1950+):", "Tornadoes:", "Wildfire Events:",
         ],
         style=(
             "font-family:sans-serif;font-size:13px;"
@@ -321,13 +325,12 @@ def inject_zoom_js(m: folium.Map) -> None:
         if (!hl) return;
         var z = _map.getZoom();
         var r, b;
-        if      (z <= 6)  {{ r = 50; b = 40; }}
-        else if (z <= 7)  {{ r = 38; b = 30; }}
-        else if (z <= 8)  {{ r = 28; b = 22; }}
-        else if (z <= 9)  {{ r = 20; b = 16; }}
-        else if (z <= 10) {{ r = 14; b = 11; }}
-        else if (z <= 11) {{ r = 9;  b = 7;  }}
-        else              {{ r = 6;  b = 5;  }}
+        if      (z <= 6)  {{ r = 25; b = 20; }}
+        else if (z <= 7)  {{ r = 20; b = 15; }}
+        else if (z <= 8)  {{ r = 15; b = 12; }}
+        else if (z <= 9)  {{ r = 10; b = 8;  }}
+        else if (z <= 10) {{ r = 7;  b = 5;  }}
+        else              {{ r = 4;  b = 3;  }}
         hl.setOptions({{radius: r, blur: b}});
     }}
     _map.on('zoomend', updateHL);
@@ -389,13 +392,12 @@ def build_map(
 ) -> folium.Map:
     m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles=None)
 
-    # NASA GIBS MODIS Terra — max_native_zoom=9, upscaled above that
+    # Esri World Imagery — cloud-free, sharp at all zoom levels
     folium.TileLayer(
-        tiles=NASA_GIBS,
-        attr="NASA GIBS / MODIS Terra",
-        name="MODIS Terra",
-        max_native_zoom=9,
-        max_zoom=18,
+        tiles=ESRI_SATELLITE,
+        attr="Esri World Imagery",
+        name="Satellite",
+        max_zoom=19,
     ).add_to(m)
 
     if layer == "Flood Zones":
@@ -407,8 +409,8 @@ def build_map(
         heat_data = grid[["lat", "lon", col]].values.tolist()
         HeatMap(
             heat_data,
-            radius=38,        # JS zoom listener overrides this immediately
-            blur=30,
+            radius=25,        # JS zoom listener updates this on every zoomend
+            blur=20,
             gradient=RADAR_GRADIENT,
             min_opacity=0.0,
             max_zoom=14,
@@ -501,5 +503,6 @@ with st.expander("County Risk Score Table"):
 
 st.caption(
     "Sources: NOAA HURDAT2 · NOAA SPC Tornado Database · Florida Geological Survey · "
-    "FEMA NFHL · NOAA Tide Gauges · IPCC AR6 · NASA GIBS MODIS Terra"
+    "FEMA NFHL · NOAA Tide Gauges · IPCC AR6 · NASA FIRMS MODIS · "
+    "Florida Forest Service · Esri World Imagery"
 )

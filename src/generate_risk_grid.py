@@ -288,12 +288,30 @@ def main():
     sealevel = norm01(idw_chunked(glat, glon, sl_lats, sl_lons, sl_vals, power=2))
     print(f"  {sealevel.min():.3f}–{sealevel.max():.3f} ({time.time()-t0:.1f}s)")
 
+    # ── Layer 6: Wildfire (fire points, weight = FRP / max_FRP) ──────────────
+    print("Computing wildfire risk...")
+    wf_lats, wf_lons, wf_vals = [], [], []
+    wf_path = os.path.join(RAW, "wildfires.csv")
+    if os.path.exists(wf_path):
+        with open(wf_path) as f:
+            for row in csv.DictReader(f):
+                try:
+                    wf_lats.append(float(row["latitude"]))
+                    wf_lons.append(float(row["longitude"]))
+                    wf_vals.append(float(row["frp"]))
+                except (ValueError, KeyError):
+                    pass
+    max_frp = max(wf_vals) if wf_vals else 1.0
+    wf_vals_n = [v / max_frp for v in wf_vals]
+    wildfire = norm01(idw_chunked(glat, glon, wf_lats, wf_lons, wf_vals_n, power=3, chunk=200))
+    print(f"  {wildfire.min():.3f}–{wildfire.max():.3f} ({time.time()-t0:.1f}s)")
+
     # ── Save ──────────────────────────────────────────────────────────────────
     n = len(glat)
     print(f"\nSaving {n:,} grid points → {OUTPUT}")
     with open(OUTPUT, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["lat", "lon", "overall", "hurricane", "tornado", "sinkhole", "sealevel"])
+        w.writerow(["lat", "lon", "overall", "hurricane", "tornado", "sinkhole", "sealevel", "wildfire"])
         for i in range(n):
             w.writerow([
                 round(float(glat[i]), 4),
@@ -303,6 +321,7 @@ def main():
                 round(float(tornado[i]), 4),
                 round(float(sinkhole[i]), 4),
                 round(float(sealevel[i]), 4),
+                round(float(wildfire[i]), 4),
             ])
 
     print(f"Done in {time.time()-t0:.1f}s")
