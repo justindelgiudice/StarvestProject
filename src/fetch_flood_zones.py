@@ -1,6 +1,7 @@
 """
 Pull FEMA National Flood Hazard Layer (NFHL) flood zone data for all 67 Florida counties.
-Uses the FEMA NFHL REST API to get Special Flood Hazard Area (SFHA) percentages by county.
+Queries the FEMA ArcGIS REST API (layer 28: Flood Hazard Zones) to compute the percentage
+of each county mapped as Special Flood Hazard Area (SFHA = zones A/V and subtypes).
 Saves to data/raw/flood_zones.csv.
 """
 
@@ -13,11 +14,11 @@ OUTPUT_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "data", "raw", "flood_zones.csv")
 )
 
-# FEMA NFHL REST API — flood hazard zones layer
-FEMA_API = (
-    "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
-)
+# Correct FEMA NFHL ArcGIS REST endpoint (layer 28 = Flood Hazard Zones)
+FEMA_API = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
 
+# DFIRM_ID format: {state_fips}{county_fips}{suffix} e.g. "12107C"
+# So county Putnam (FIPS 12107) has DFIRM_ID LIKE '12107%'
 FLORIDA_COUNTIES = {
     "Alachua": "12001", "Baker": "12003", "Bay": "12005", "Bradford": "12007",
     "Brevard": "12009", "Broward": "12011", "Calhoun": "12013", "Charlotte": "12015",
@@ -38,62 +39,69 @@ FLORIDA_COUNTIES = {
     "Wakulla": "12129", "Walton": "12131", "Washington": "12133",
 }
 
-# SFHA flood zones (A and V series) — areas with 1% annual flood chance
-SFHA_ZONES = {"A", "AE", "AH", "AO", "AR", "A99", "V", "VE"}
 
-
-def fetch_flood_data_for_county(fips: str) -> dict:
-    """Query FEMA NFHL for flood zone areas within a county (by FIPS)."""
+def fetch_sfha_pct(fips: str) -> dict:
+    """
+    Query FEMA NFHL layer 28 for a county by FIPS.
+    Returns total mapped area and SFHA area (SFHA_TF='T'), both in square degrees.
+    Ratio is the meaningful output; absolute values depend on projection.
+    """
     params = {
-        "where": f"DFIRM_ID LIKE '{fips[:5]}%'",
-        "outFields": "FLD_ZONE,SHAPE_Area",
+        "where": f"DFIRM_ID LIKE '{fips}%'",
+        "outStatistics": (
+            '[{"statisticType":"sum","onStatisticField":"SHAPE.STArea()",'
+            '"outStatisticFieldName":"area"}]'
+        ),
+        "groupByFieldsForStatistics": "SFHA_TF",
         "returnGeometry": "false",
         "f": "json",
-        "resultRecordCount": 2000,
     }
     try:
         resp = requests.get(FEMA_API, params=params, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-        features = data.get("features", [])
+        features = resp.json().get("features", [])
 
-        total_area = 0.0
         sfha_area = 0.0
+        total_area = 0.0
         for feat in features:
             attrs = feat.get("attributes", {})
-            zone = str(attrs.get("FLD_ZONE", "")).strip().upper()
-            area = float(attrs.get("SHAPE_Area", 0) or 0)
+            area = float(attrs.get("area") or 0)
             total_area += area
-            if zone in SFHA_ZONES:
+            if attrs.get("SFHA_TF") == "T":
                 sfha_area += area
 
         pct = round(100.0 * sfha_area / total_area, 2) if total_area > 0 else 0.0
-        return {"sfha_area_sqm": round(sfha_area, 2), "total_area_sqm": round(total_area, 2), "sfha_pct": pct}
+        return {"sfha_area": round(sfha_area, 6), "total_area": round(total_area, 6), "sfha_pct": pct}
+
     except Exception as e:
-        print(f"  Warning: FEMA API error for FIPS {fips}: {e}")
-        return {"sfha_area_sqm": None, "total_area_sqm": None, "sfha_pct": None}
+        print(f"\n    Warning: API error for FIPS {fips}: {e}")
+        return {"sfha_area": None, "total_area": None, "sfha_pct": None}
 
 
 def main():
-    print("Fetching FEMA flood zone data for 67 Florida counties...")
+    print("Fetching FEMA NFHL flood zone data for 67 Florida counties...")
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 
     rows = []
     for county, fips in FLORIDA_COUNTIES.items():
         print(f"  {county} ({fips})...", end=" ", flush=True)
-        result = fetch_flood_data_for_county(fips)
+        result = fetch_sfha_pct(fips)
         rows.append({"county": county, "fips": fips, **result})
-        print(f"SFHA: {result['sfha_pct']}%")
-        time.sleep(0.3)  # be polite to the API
+        pct = result["sfha_pct"]
+        print(f"SFHA: {pct}%" if pct is not None else "no data")
+        time.sleep(0.2)
 
-    fieldnames = ["county", "fips", "sfha_area_sqm", "total_area_sqm", "sfha_pct"]
+    fieldnames = ["county", "fips", "sfha_area", "total_area", "sfha_pct"]
     with open(OUTPUT_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
     valid = [r for r in rows if r["sfha_pct"] is not None]
-    print(f"\nSaved flood zone data for {len(valid)}/{len(rows)} counties to {OUTPUT_PATH}")
+    avg = sum(r["sfha_pct"] for r in valid) / len(valid) if valid else 0
+    print(f"\nSaved flood zone data for {len(valid)}/{len(rows)} counties.")
+    print(f"Average SFHA coverage: {avg:.1f}%")
+    print(f"Output: {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
