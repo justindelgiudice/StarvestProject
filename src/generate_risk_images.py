@@ -194,18 +194,45 @@ def interpolate_smooth(
     tgt_lats: np.ndarray,
     tgt_lons: np.ndarray,
     sigma: float,
+    land_mask: np.ndarray | None = None,
+    nearest_fallback: bool = True,
 ) -> np.ndarray:
-    """Linearly interpolate source scatter to target raster, then Gaussian smooth."""
+    """Linearly interpolate source scatter to raster, then boundary-aware Gaussian smooth.
+
+    nearest_fallback: fill pixels outside the convex hull of source points with
+        nearest-neighbor values instead of 0.  Safe for NRI layers (all counties
+        have data) but should be False for sparse surge source points so that
+        raw_threshold can hide inland pixels correctly.
+
+    land_mask: when provided, applies boundary-aware blur (blur values*mask /
+        blur mask) so coastal land pixels are not pulled toward zero by the
+        transparent ocean surrounding the image.
+    """
     src_pts = np.column_stack([src_lons.astype(np.float64),
                                src_lats.astype(np.float64)])
     tgt_pts = np.column_stack([tgt_lons.ravel().astype(np.float64),
                                tgt_lats.ravel().astype(np.float64)])
     vals = src_vals.astype(np.float64)
 
-    interp = griddata(src_pts, vals, tgt_pts, method="linear", fill_value=0.0)
-    raster = interp.reshape(IMG_H, IMG_W).astype(np.float32)
-    raster = np.nan_to_num(raster, nan=0.0)
-    return gaussian_filter(raster, sigma=sigma).astype(np.float32)
+    interp = griddata(src_pts, vals, tgt_pts, method="linear", fill_value=np.nan)
+    if nearest_fallback:
+        outside = np.isnan(interp)
+        if outside.any():
+            interp[outside] = griddata(src_pts, vals, tgt_pts[outside], method="nearest")
+
+    raster = np.nan_to_num(interp, nan=0.0).reshape(IMG_H, IMG_W).astype(np.float32)
+
+    if land_mask is not None:
+        # Boundary-aware blur: prevents ocean zeros from bleeding into coastal land pixels.
+        w = land_mask.astype(np.float32)
+        blurred_vals = gaussian_filter(raster * w, sigma=sigma)
+        blurred_w    = gaussian_filter(w,          sigma=sigma)
+        safe_w = np.where(blurred_w > 1e-6, blurred_w, 1.0)
+        raster = np.where(blurred_w > 1e-6, blurred_vals / safe_w, 0.0).astype(np.float32)
+    else:
+        raster = gaussian_filter(raster, sigma=sigma).astype(np.float32)
+
+    return raster
 
 
 def raster_to_png(
@@ -292,7 +319,8 @@ def main() -> None:
         t1 = time.time()
         print(f"  [{name}] interpolating {len(g_lats):,} pts → {IMG_H}×{IMG_W}...")
         vals = grid[col].values.astype(np.float32)
-        raster = interpolate_smooth(g_lats, g_lons, vals, lats_2d, lons_2d, SIGMA[name])
+        raster = interpolate_smooth(g_lats, g_lons, vals, lats_2d, lons_2d, SIGMA[name],
+                                   land_mask=land_mask, nearest_fallback=True)
         out = os.path.join(PROC, f"risk_{name}.png")
         raster_to_png(raster, land_mask, out)
         print(f"    → {out}  ({time.time()-t1:.1f}s)")
@@ -319,7 +347,8 @@ def main() -> None:
                 s_lons_arr = np.array(s_lons, dtype=np.float32)
                 s_vals_arr = np.array(s_vals, dtype=np.float32)
                 surge_raster = interpolate_smooth(
-                    s_lats_arr, s_lons_arr, s_vals_arr, lats_2d, lons_2d, SIGMA["surge"]
+                    s_lats_arr, s_lons_arr, s_vals_arr, lats_2d, lons_2d, SIGMA["surge"],
+                    land_mask=land_mask, nearest_fallback=False,
                 )
                 out = os.path.join(PROC, f"surge_cat{cat_n}.png")
                 raster_to_png(

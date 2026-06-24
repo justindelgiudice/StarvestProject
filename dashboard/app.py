@@ -33,15 +33,15 @@ FL_BOUNDS = [[24.4, -87.7], [31.2, -79.9]]
 
 # Layer name → PNG filename (Storm Surge uses dynamic surge_cat{n}.png)
 LAYER_TO_PNG = {
-    "Expected Annual Loss": "risk_eal.png",
-    "Composite Risk":       "risk_risk.png",
-    "Hurricane":            "risk_hurricane.png",
-    "Coastal Flooding":     "risk_coastal_flood.png",
-    "Inland Flooding":      "risk_inland_flood.png",
-    "Tornado":              "risk_tornado.png",
-    "Wildfire":             "risk_wildfire.png",
-    "Strong Wind":          "risk_wind.png",
-    "Storm Surge":          "surge_cat4.png",
+    "Composite Risk":                 "risk_risk.png",
+    "Physical Hazard Exposure (EAL)": "risk_eal.png",
+    "Hurricane":                      "risk_hurricane.png",
+    "Coastal Flooding":               "risk_coastal_flood.png",
+    "Inland Flooding":                "risk_inland_flood.png",
+    "Tornado":                        "risk_tornado.png",
+    "Wildfire":                       "risk_wildfire.png",
+    "Strong Wind":                    "risk_wind.png",
+    "Storm Surge":                    "surge_cat4.png",
 }
 
 SURGE_PNGS = [f"surge_cat{i}.png" for i in range(1, 6)]
@@ -49,8 +49,8 @@ SURGE_PNGS = [f"surge_cat{i}.png" for i in range(1, 6)]
 LAYER_CHOICES = list(LAYER_TO_PNG.keys())
 
 LAYER_LABEL = {
-    "Expected Annual Loss": "FEMA NRI EAL Score — physical hazard exposure, no social adjustment",
-    "Composite Risk":       "FEMA NRI Risk Score — EAL adjusted for social vulnerability & resilience",
+    "Composite Risk":                 "FEMA NRI Risk Score — EAL adjusted for social vulnerability & resilience",
+    "Physical Hazard Exposure (EAL)": "FEMA NRI EAL Score — pure physical hazard exposure, no social adjustment",
     "Hurricane":            "FEMA NRI HRCN Expected Annual Loss Score (0–100 national percentile)",
     "Coastal Flooding":     "FEMA NRI CFLD Expected Annual Loss Score (storm surge + tidal)",
     "Inland Flooding":      "FEMA NRI IFLD Expected Annual Loss Score (riverine flooding)",
@@ -62,8 +62,8 @@ LAYER_LABEL = {
 
 # Layer → county_risk_scores.csv score column (for popup display)
 LAYER_SCORE_COL = {
-    "Expected Annual Loss": "eal_score",
-    "Composite Risk":       "risk_score",
+    "Composite Risk":                 "risk_score",
+    "Physical Hazard Exposure (EAL)": "eal_score",
     "Hurricane":            "hurricane_score",
     "Coastal Flooding":     "coastal_flood_score",
     "Inland Flooding":      "inland_flood_score",
@@ -369,14 +369,14 @@ if layer == "Storm Surge":
             "Inland counties appear transparent. Cat 4 is the realistic worst-case "
             "for most Florida coastal counties."
         )
-elif layer in ("Expected Annual Loss", "Composite Risk"):
-    diff = "EAL excludes social vulnerability and community resilience adjustments." \
-           if layer == "Expected Annual Loss" else \
-           "Risk Score = EAL adjusted downward by high community resilience and " \
-           "upward by high social vulnerability."
-    st.info(
-        f"**{layer}** — FEMA NRI 0–100 national percentile score. {diff}"
+elif layer in ("Physical Hazard Exposure (EAL)", "Composite Risk"):
+    diff = (
+        "EAL Score — pure physical hazard exposure, no adjustment for community factors."
+        if layer == "Physical Hazard Exposure (EAL)"
+        else "Risk Score = EAL adjusted downward by high community resilience and "
+             "upward by high social vulnerability."
     )
+    st.info(f"**{layer}** — FEMA NRI 0–100 national percentile score. {diff}")
 
 # ── Map ────────────────────────────────────────────────────────────────────────
 risk_map = build_map(layer, rich_geojson, surge_cat)
