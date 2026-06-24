@@ -68,7 +68,7 @@ COUNTY_CENTROIDS = {
 
 LAT_MIN, LAT_MAX = 24.5, 31.0
 LON_MIN, LON_MAX = -87.6, -80.0
-STEP = 0.05
+STEP = 0.02   # ~2km spacing — dense enough that no individual dots visible at any zoom
 
 
 # ── GeoJSON / PIP ──────────────────────────────────────────────────────────────

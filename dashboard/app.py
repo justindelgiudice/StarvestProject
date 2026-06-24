@@ -18,7 +18,9 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from folium import MacroElement
 from folium.plugins import HeatMap
+from jinja2 import Template
 from streamlit_folium import st_folium
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -303,42 +305,46 @@ def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
     )
 
 
+class _HeatZoomJs(MacroElement):
+    """MacroElement that injects zoom-responsive radius JS via the executed script path."""
+
+    _template = Template("""
+        {%- macro script(this, kwargs) %}
+        (function() {
+            // 0.02° grid: pixel distance between adjacent points at zoom z
+            function _heatRadius(z) {
+                var grid_px = 0.02 * 256.0 * Math.pow(2, z) / 360.0;
+                var min_r   = Math.ceil(grid_px * 0.75);  // 1.5x overlap
+                var base_r  = z <= 6 ? 25 : z <= 7 ? 20 : z <= 8 ? 15 : z <= 9 ? 12 : 10;
+                return Math.max(base_r, min_r);
+            }
+            function _applyRadius(map) {
+                var hl = null;
+                map.eachLayer(function(l) { if (l._heat) hl = l; });
+                if (!hl) return;
+                var r = _heatRadius(map.getZoom());
+                var b = Math.round(r * 0.75);
+                hl._heat.radius(r, b);
+                hl.options.radius = r;
+                hl.options.blur   = b;
+                hl.redraw();
+            }
+            // map_div is the variable name streamlit-folium uses for every map
+            if (typeof map_div !== 'undefined') {
+                map_div.on('zoomend', function() { _applyRadius(map_div); });
+                setTimeout(function() { _applyRadius(map_div); }, 400);
+            }
+        })();
+        {%- endmacro %}
+    """)
+
+    def __init__(self):
+        super().__init__()
+        self._name = "HeatZoomJs"
+
+
 def inject_zoom_js(m: folium.Map) -> None:
-    """Inject JS that rescales the HeatMap radius/blur on every zoom change."""
-    mv = m.get_name()
-    js = f"""
-<script>
-(function() {{
-    var _map = {mv};
-    function findHL() {{
-        var found = null;
-        _map.eachLayer(function(l) {{
-            if (l.options && typeof l.options.radius !== 'undefined'
-                    && typeof l.setOptions === 'function') {{
-                found = l;
-            }}
-        }});
-        return found;
-    }}
-    function updateHL() {{
-        var hl = findHL();
-        if (!hl) return;
-        var z = _map.getZoom();
-        var r, b;
-        if      (z <= 6)  {{ r = 25; b = 20; }}
-        else if (z <= 7)  {{ r = 20; b = 15; }}
-        else if (z <= 8)  {{ r = 15; b = 12; }}
-        else if (z <= 9)  {{ r = 10; b = 8;  }}
-        else if (z <= 10) {{ r = 7;  b = 5;  }}
-        else              {{ r = 4;  b = 3;  }}
-        hl.setOptions({{radius: r, blur: b}});
-    }}
-    _map.on('zoomend', updateHL);
-    setTimeout(updateHL, 700);
-}})();
-</script>
-"""
-    m.get_root().html.add_child(folium.Element(js))
+    _HeatZoomJs().add_to(m)
 
 
 def add_legend(m: folium.Map, layer: str) -> None:
@@ -409,10 +415,10 @@ def build_map(
         heat_data = grid[["lat", "lon", col]].values.tolist()
         HeatMap(
             heat_data,
-            radius=25,        # JS zoom listener updates this on every zoomend
-            blur=20,
+            radius=20,        # zoom-7 default; JS listener rescales on zoomend
+            blur=15,
             gradient=RADAR_GRADIENT,
-            min_opacity=0.0,
+            min_opacity=0.45,
             max_zoom=14,
         ).add_to(m)
 
