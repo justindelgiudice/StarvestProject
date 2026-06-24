@@ -6,3 +6,6 @@ streamlit-folium
 geopandas
 requests
 python-dotenv
+Pillow
+scipy
+matplotlib

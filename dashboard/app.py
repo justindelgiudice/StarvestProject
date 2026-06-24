@@ -2,12 +2,11 @@
 TerraRisk — Florida Climate Risk Intelligence Dashboard
 
 Layers (radio toggle):
-  Overall Risk | Hurricane Tracks | Tornadoes | Sinkholes | Flood Zones | Sea Level Rise
+  Overall Risk | Hurricane Tracks | Tornadoes | Sinkholes | Flood Zones | Sea Level Rise | Wildfire
 
-Grid-based heatmap (clipped to Florida land) for all non-choropleth layers.
-Flood Zones renders as a county choropleth (SFHA %).
-NASA GIBS MODIS Terra satellite base tile.
-Zoom-responsive heatmap radius via injected JS.
+Each layer is a pre-rendered RGBA PNG (scipy KDE + Gaussian smoothed, clipped to
+Florida land) displayed as a Folium ImageOverlay at 0.6 opacity over Esri satellite.
+Produces a smooth weather-radar appearance at any zoom — no heatmap blobs.
 County polygons are clickable — popup shows full risk breakdown.
 """
 
@@ -18,22 +17,30 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-from folium import MacroElement
-from folium.plugins import HeatMap
-from jinja2 import Template
 from streamlit_folium import st_folium
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 PATHS = {
-    "risk":       os.path.join(ROOT, "data", "processed", "county_risk_scores.csv"),
-    "grid":       os.path.join(ROOT, "data", "processed", "risk_grid.csv"),
-    "hurricanes": os.path.join(ROOT, "data", "raw", "hurricanes.csv"),
-    "tornadoes":  os.path.join(ROOT, "data", "raw", "tornadoes.csv"),
-    "sinkholes":  os.path.join(ROOT, "data", "raw", "sinkholes.csv"),
-    "flood":      os.path.join(ROOT, "data", "raw", "flood_zones.csv"),
-    "sealevel":   os.path.join(ROOT, "data", "raw", "sealevel.csv"),
+    "risk":     os.path.join(ROOT, "data", "processed", "county_risk_scores.csv"),
+    "flood":    os.path.join(ROOT, "data", "raw",       "flood_zones.csv"),
+    "tornadoes":os.path.join(ROOT, "data", "raw",       "tornadoes.csv"),
+}
+IMG_DIR = os.path.join(ROOT, "data", "processed")
+
+# Florida bounding box — must match generate_risk_images.py
+FL_BOUNDS = [[24.4, -87.7], [31.2, -79.9]]
+
+# PNG file for each layer toggle
+LAYER_TO_PNG = {
+    "Overall Risk":     "risk_overall.png",
+    "Hurricane Tracks": "risk_hurricane.png",
+    "Tornadoes":        "risk_tornado.png",
+    "Sinkholes":        "risk_sinkhole.png",
+    "Flood Zones":      "risk_flood.png",
+    "Sea Level Rise":   "risk_sealevel.png",
+    "Wildfire":         "risk_wildfire.png",
 }
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -88,27 +95,6 @@ ESRI_SATELLITE = (
     "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
 
-RADAR_GRADIENT = {
-    0.00: "rgba(0,0,0,0)",
-    0.10: "#0000FF",
-    0.25: "#00CCFF",
-    0.45: "#00FF88",
-    0.60: "#FFFF00",
-    0.75: "#FF8800",
-    0.90: "#FF2200",
-    1.00: "#AA0000",
-}
-
-# Grid column for each heatmap layer
-GRID_LAYER_COL = {
-    "Overall Risk":     "overall",
-    "Hurricane Tracks": "hurricane",
-    "Tornadoes":        "tornado",
-    "Sinkholes":        "sinkhole",
-    "Sea Level Rise":   "sealevel",
-    "Wildfire":         "wildfire",
-}
-
 LAYER_CHOICES = [
     "Overall Risk",
     "Hurricane Tracks",
@@ -144,11 +130,6 @@ def load_florida_geojson() -> dict:
         "type": "FeatureCollection",
         "features": [f for f in r.json()["features"] if f["id"] in fips_set],
     }
-
-
-@st.cache_data
-def load_risk_grid() -> pd.DataFrame:
-    return pd.read_csv(PATHS["grid"])
 
 
 @st.cache_data
@@ -305,48 +286,6 @@ def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
     )
 
 
-class _HeatZoomJs(MacroElement):
-    """MacroElement that injects zoom-responsive radius JS via the executed script path."""
-
-    _template = Template("""
-        {%- macro script(this, kwargs) %}
-        (function() {
-            // 0.02° grid: pixel distance between adjacent points at zoom z
-            function _heatRadius(z) {
-                var grid_px = 0.02 * 256.0 * Math.pow(2, z) / 360.0;
-                var min_r   = Math.ceil(grid_px * 0.75);  // 1.5x overlap
-                var base_r  = z <= 6 ? 25 : z <= 7 ? 20 : z <= 8 ? 15 : z <= 9 ? 12 : 10;
-                return Math.max(base_r, min_r);
-            }
-            function _applyRadius(map) {
-                var hl = null;
-                map.eachLayer(function(l) { if (l._heat) hl = l; });
-                if (!hl) return;
-                var r = _heatRadius(map.getZoom());
-                var b = Math.round(r * 0.75);
-                hl._heat.radius(r, b);
-                hl.options.radius = r;
-                hl.options.blur   = b;
-                hl.redraw();
-            }
-            // map_div is the variable name streamlit-folium uses for every map
-            if (typeof map_div !== 'undefined') {
-                map_div.on('zoomend', function() { _applyRadius(map_div); });
-                setTimeout(function() { _applyRadius(map_div); }, 400);
-            }
-        })();
-        {%- endmacro %}
-    """)
-
-    def __init__(self):
-        super().__init__()
-        self._name = "HeatZoomJs"
-
-
-def inject_zoom_js(m: folium.Map) -> None:
-    _HeatZoomJs().add_to(m)
-
-
 def add_legend(m: folium.Map, layer: str) -> None:
     if layer == "Flood Zones":
         swatches = [
@@ -391,14 +330,9 @@ def add_legend(m: folium.Map, layer: str) -> None:
     m.get_root().html.add_child(folium.Element(html))
 
 
-def build_map(
-    layer: str,
-    grid: pd.DataFrame,
-    rich_geojson: dict,
-) -> folium.Map:
+def build_map(layer: str, rich_geojson: dict) -> folium.Map:
     m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles=None)
 
-    # Esri World Imagery — cloud-free, sharp at all zoom levels
     folium.TileLayer(
         tiles=ESRI_SATELLITE,
         attr="Esri World Imagery",
@@ -406,27 +340,20 @@ def build_map(
         max_zoom=19,
     ).add_to(m)
 
-    if layer == "Flood Zones":
-        # Choropleth fill — no heatmap
-        make_county_layer(rich_geojson, layer).add_to(m)
-    else:
-        # Grid-based heatmap (clipped to Florida land by the grid generator)
-        col = GRID_LAYER_COL[layer]
-        heat_data = grid[["lat", "lon", col]].values.tolist()
-        HeatMap(
-            heat_data,
-            radius=20,        # zoom-7 default; JS listener rescales on zoomend
-            blur=15,
-            gradient=RADAR_GRADIENT,
-            min_opacity=0.45,
-            max_zoom=14,
+    # Smooth raster overlay — looks like weather radar, works at any zoom
+    png_path = os.path.join(IMG_DIR, LAYER_TO_PNG[layer])
+    if os.path.exists(png_path):
+        folium.raster_layers.ImageOverlay(
+            image=png_path,
+            bounds=FL_BOUNDS,
+            opacity=0.6,
+            name="risk_overlay",
+            cross_origin=False,
+            zindex=1,
         ).add_to(m)
 
-        # County borders + tooltip + popup (transparent fill)
-        make_county_layer(rich_geojson, layer).add_to(m)
-
-        # Zoom-responsive radius
-        inject_zoom_js(m)
+    # County borders + hover tooltip + click popup (transparent polygon fill)
+    make_county_layer(rich_geojson, layer).add_to(m)
 
     add_legend(m, layer)
     return m
@@ -438,8 +365,11 @@ st.set_page_config(page_title="TerraRisk", layout="wide")
 st.title("TerraRisk — Florida Climate Risk Intelligence")
 st.caption("Grid-based hazard maps clipped to Florida land · Click any county for full risk breakdown.")
 
-missing = [k for k in ("risk", "grid") if not os.path.exists(PATHS[k])]
-if missing:
+missing_imgs = [
+    f for f in LAYER_TO_PNG.values()
+    if not os.path.exists(os.path.join(IMG_DIR, f))
+]
+if not os.path.exists(PATHS["risk"]) or missing_imgs:
     st.error(
         "Required data missing. Run the full pipeline:\n\n"
         "```\n"
@@ -450,16 +380,16 @@ if missing:
         "python src/fetch_sinkholes.py\n"
         "python src/build_risk_score.py\n"
         "python src/generate_risk_grid.py\n"
+        "python src/generate_risk_images.py\n"
         "```"
     )
     st.stop()
 
-df_risk   = load_risk_scores()
-df_flood  = load_flood_zones()
-grid      = load_risk_grid()
-geojson   = load_florida_geojson()
+df_risk  = load_risk_scores()
+df_flood = load_flood_zones()
+geojson  = load_florida_geojson()
 
-df_tornadoes = pd.read_csv(PATHS["tornadoes"]) if os.path.exists(PATHS["tornadoes"]) else pd.DataFrame()
+df_tornadoes   = pd.read_csv(PATHS["tornadoes"]) if os.path.exists(PATHS["tornadoes"]) else pd.DataFrame()
 tornado_counts = compute_tornado_counts(df_tornadoes)
 
 rich_geojson = enrich_geojson(geojson, df_risk, df_flood, tornado_counts)
@@ -470,7 +400,7 @@ c1.metric("Counties Scored", len(df_risk))
 c2.metric("Avg Risk Score", f"{df_risk['composite_risk_score'].mean():.2f}")
 top_row = df_risk.loc[df_risk["composite_risk_score"].idxmax()]
 c3.metric("Highest Risk", f"{top_row['county']} ({top_row['composite_risk_score']:.1f})")
-c4.metric("Grid Points", f"{len(grid):,}")
+c4.metric("Raster Layers", len(LAYER_TO_PNG))
 c5.metric("Tornado Events", f"{len(df_tornadoes):,}" if not df_tornadoes.empty else "—")
 
 # ── Layer toggle ───────────────────────────────────────────────────────────────
@@ -482,7 +412,7 @@ layer = st.radio(
 )
 
 # ── Map ────────────────────────────────────────────────────────────────────────
-risk_map = build_map(layer, grid, rich_geojson)
+risk_map = build_map(layer, rich_geojson)
 st_folium(risk_map, width=None, height=620, returned_objects=[])
 
 # ── Data table ─────────────────────────────────────────────────────────────────
