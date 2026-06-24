@@ -306,12 +306,33 @@ def main():
     wildfire = norm01(idw_chunked(glat, glon, wf_lats, wf_lons, wf_vals_n, power=3, chunk=200))
     print(f"  {wildfire.min():.3f}–{wildfire.max():.3f} ({time.time()-t0:.1f}s)")
 
+    # ── Layer 7: Storm Surge Cat 4 (county centroid IDW) ──────────────────────
+    print("Computing storm surge risk...")
+    MAX_SURGE_FT = 20.0
+    sg_lats, sg_lons, sg_vals = [], [], []
+    sg_path = os.path.join(RAW, "storm_surge.csv")
+    if os.path.exists(sg_path):
+        with open(sg_path) as f:
+            for row in csv.DictReader(f):
+                county = row.get("county", "")
+                cat4 = float(row.get("cat4_ft") or 0)
+                if cat4 > 0 and county in COUNTY_CENTROIDS:
+                    clat, clon = COUNTY_CENTROIDS[county]
+                    sg_lats.append(clat)
+                    sg_lons.append(clon)
+                    sg_vals.append(cat4 / MAX_SURGE_FT)
+    if sg_lats:
+        surge = norm01(idw_chunked(glat, glon, sg_lats, sg_lons, sg_vals, power=2))
+    else:
+        surge = np.zeros(len(glat), np.float32)
+    print(f"  {surge.min():.3f}–{surge.max():.3f} ({time.time()-t0:.1f}s)")
+
     # ── Save ──────────────────────────────────────────────────────────────────
     n = len(glat)
     print(f"\nSaving {n:,} grid points → {OUTPUT}")
     with open(OUTPUT, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["lat", "lon", "overall", "hurricane", "tornado", "sinkhole", "sealevel", "wildfire"])
+        w.writerow(["lat", "lon", "overall", "hurricane", "tornado", "sinkhole", "sealevel", "wildfire", "surge"])
         for i in range(n):
             w.writerow([
                 round(float(glat[i]), 4),
@@ -322,6 +343,7 @@ def main():
                 round(float(sinkhole[i]), 4),
                 round(float(sealevel[i]), 4),
                 round(float(wildfire[i]), 4),
+                round(float(surge[i]), 4),
             ])
 
     print(f"Done in {time.time()-t0:.1f}s")

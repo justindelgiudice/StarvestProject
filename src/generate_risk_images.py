@@ -95,6 +95,15 @@ RISK_CMAP = mcolors.LinearSegmentedColormap.from_list(
     )),
 )
 
+# Surge colormap: light blue (1-3 ft) → medium blue (3-6 ft) → dark blue (6-9 ft) → navy (9+ ft)
+SURGE_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "surge",
+    list(zip(
+        [0.0,      0.10,     0.25,     0.45,     0.70,     1.0],
+        ["#C8E8FF","#6DB8F0","#2070D0","#0038A0","#001A6E","#00052A"],
+    )),
+)
+
 # Gaussian smoothing sigma (pixels). Larger = smoother surface.
 SIGMA = {
     "overall":   5,
@@ -104,7 +113,10 @@ SIGMA = {
     "sealevel":  5,
     "wildfire":  6,
     "flood":     9,   # only 67 county centroids → needs more smoothing
+    "surge":     8,   # county centroids; smooth coast-to-inland gradient
 }
+
+MAX_SURGE_FT = 20.0  # Gulf County Cat 5 ceiling — used for fixed normalization
 
 
 # ── GeoJSON / land mask ────────────────────────────────────────────────────────
@@ -194,19 +206,40 @@ def interpolate_smooth(
     return gaussian_filter(raster, sigma=sigma).astype(np.float32)
 
 
-def raster_to_png(raster: np.ndarray, land_mask: np.ndarray, out_path: str) -> None:
-    """Normalise → colormap → alpha mask → save RGBA PNG."""
-    land_vals = raster[land_mask]
-    vmin = float(land_vals.min()) if land_vals.size else 0.0
-    vmax = float(land_vals.max()) if land_vals.size else 1.0
+def raster_to_png(
+    raster: np.ndarray,
+    land_mask: np.ndarray,
+    out_path: str,
+    cmap=None,
+    fixed_vmax: float | None = None,
+    raw_threshold: float = 0.0,
+) -> None:
+    """Normalise → colormap → alpha mask → save RGBA PNG.
+
+    cmap: colormap to use (defaults to RISK_CMAP)
+    fixed_vmax: if set, normalise to [0, fixed_vmax] instead of data range
+    raw_threshold: pixels with raster value <= threshold get alpha=0 even on land
+    """
+    if cmap is None:
+        cmap = RISK_CMAP
+
+    # Build visible mask: land pixels above optional threshold
+    visible = land_mask.copy()
+    if raw_threshold > 0.0:
+        visible = visible & (raster > raw_threshold)
+
+    if fixed_vmax is not None:
+        vmin, vmax = 0.0, fixed_vmax
+    else:
+        vis_vals = raster[visible]
+        vmin = float(vis_vals.min()) if vis_vals.size else 0.0
+        vmax = float(vis_vals.max()) if vis_vals.size else 1.0
     if vmax == vmin:
         vmax = vmin + 1e-9
 
-    norm = np.clip((raster - vmin) / (vmax - vmin), 0.0, 1.0)
-    rgba = RISK_CMAP(norm)                          # (H, W, 4) float64
-
-    # Full alpha on land, transparent on ocean
-    rgba[:, :, 3] = np.where(land_mask, 1.0, 0.0)
+    norm_arr = np.clip((raster - vmin) / (vmax - vmin), 0.0, 1.0)
+    rgba = cmap(norm_arr)                           # (H, W, 4) float64
+    rgba[:, :, 3] = np.where(visible, 1.0, 0.0)
 
     img = (rgba * 255).clip(0, 255).astype(np.uint8)
     Image.fromarray(img, "RGBA").save(out_path)
@@ -243,6 +276,7 @@ def main() -> None:
         "sinkhole":  "sinkhole",
         "sealevel":  "sealevel",
         "wildfire":  "wildfire",
+        "surge":     "surge",
     }
 
     for name, col in grid_layers.items():
@@ -282,7 +316,43 @@ def main() -> None:
     raster_to_png(flood_raster, land_mask, out)
     print(f"    → {out}  ({time.time()-t1:.1f}s)")
 
-    print(f"\nGenerated 7 PNG images in {PROC}/  (total {time.time()-t0:.0f}s)")
+    # ── Storm surge — category-specific PNGs (Cat 1–5) ─────────────────────────
+    surge_csv = os.path.join(ROOT, "data", "raw", "storm_surge.csv")
+    if os.path.exists(surge_csv):
+        print("  [surge] generating Cat 1–5 surge images...")
+        surge_df = pd.read_csv(surge_csv)
+        for cat_n in range(1, 6):
+            col = f"cat{cat_n}_ft"
+            t1 = time.time()
+            s_lats, s_lons, s_vals = [], [], []
+            for _, row in surge_df.iterrows():
+                county = row["county"]
+                depth = float(row.get(col, 0) or 0)
+                if depth > 0 and county in COUNTY_CENTROIDS:
+                    clat, clon = COUNTY_CENTROIDS[county]
+                    s_lats.append(clat)
+                    s_lons.append(clon)
+                    s_vals.append(depth)
+            if s_lats:
+                f_lats = np.array(s_lats, dtype=np.float32)
+                f_lons = np.array(s_lons, dtype=np.float32)
+                f_vals = np.array(s_vals, dtype=np.float32)
+                surge_raster = interpolate_smooth(
+                    f_lats, f_lons, f_vals, lats_2d, lons_2d, SIGMA["surge"]
+                )
+                out = os.path.join(PROC, f"surge_cat{cat_n}.png")
+                raster_to_png(
+                    surge_raster, land_mask, out,
+                    cmap=SURGE_CMAP,
+                    fixed_vmax=MAX_SURGE_FT,
+                    raw_threshold=0.4,  # hide inland areas with < 0.4 ft interpolated value
+                )
+                print(f"    → {out}  ({time.time()-t1:.1f}s)")
+    else:
+        print("  [surge] storm_surge.csv not found — skipping surge images")
+
+    total_imgs = 7 + 1 + 5  # risk layers + flood + surge cats
+    print(f"\nGenerated {total_imgs} PNG images in {PROC}/  (total {time.time()-t0:.0f}s)")
 
 
 if __name__ == "__main__":

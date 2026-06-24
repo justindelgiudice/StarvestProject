@@ -1,9 +1,9 @@
 """
-Combine hurricane, flood zone, sea level rise, tornado, sinkhole, and wildfire
-data into a composite risk score (0-10) per Florida county.
+Combine hurricane, storm surge, flood zone, sea level rise, tornado, sinkhole,
+and wildfire data into a composite risk score (0-10) per Florida county.
 
-Weights:  Hurricane 30% · Flood 25% · Sea Level 20% · Tornado 10%
-          Sinkhole 10% · Wildfire 5%
+Weights:  Hurricane 25% · Storm Surge 20% · Flood 20% · Sea Level 15%
+          Tornado 10% · Sinkhole 5% · Wildfire 5%
 
 Saves to data/processed/county_risk_scores.csv.
 """
@@ -17,13 +17,14 @@ RAW  = os.path.join(ROOT, "data", "raw")
 PROC = os.path.join(ROOT, "data", "processed")
 
 PATHS = {
-    "hurricanes": os.path.join(RAW, "hurricanes.csv"),
-    "flood":      os.path.join(RAW, "flood_zones.csv"),
-    "sealevel":   os.path.join(RAW, "sealevel.csv"),
-    "tornadoes":  os.path.join(RAW, "tornadoes.csv"),
-    "sinkholes":  os.path.join(RAW, "sinkholes.csv"),
-    "wildfires":  os.path.join(RAW, "wildfires.csv"),
-    "output":     os.path.join(PROC, "county_risk_scores.csv"),
+    "hurricanes":   os.path.join(RAW, "hurricanes.csv"),
+    "flood":        os.path.join(RAW, "flood_zones.csv"),
+    "sealevel":     os.path.join(RAW, "sealevel.csv"),
+    "tornadoes":    os.path.join(RAW, "tornadoes.csv"),
+    "sinkholes":    os.path.join(RAW, "sinkholes.csv"),
+    "wildfires":    os.path.join(RAW, "wildfires.csv"),
+    "storm_surge":  os.path.join(RAW, "storm_surge.csv"),
+    "output":       os.path.join(PROC, "county_risk_scores.csv"),
 }
 
 FLORIDA_COUNTIES = [
@@ -66,11 +67,12 @@ COUNTY_CENTROIDS = {
 }
 
 WEIGHTS = {
-    "hurricane": 0.30,
-    "flood":     0.25,
-    "sealevel":  0.20,
+    "hurricane": 0.25,
+    "surge":     0.20,
+    "flood":     0.20,
+    "sealevel":  0.15,
     "tornado":   0.10,
-    "sinkhole":  0.10,
+    "sinkhole":  0.05,
     "wildfire":  0.05,
 }
 
@@ -82,6 +84,7 @@ MAX_SLR_2100     = 0.85
 MAX_TORNADO_CNT  = 200.0    # FL county tornado count, historical high ≈ 180
 MAX_SINKHOLE_CNT = 1200.0   # Hillsborough ≈ 1,180; ceiling gives 0–10 headroom
 MAX_FIRE_SCORE   = 200.0    # count × avg_frp normalization ceiling
+MAX_SURGE_FT     = 20.0     # Gulf County Cat 5 ≈ 20 ft; absolute ceiling
 
 
 def haversine(lat1, lon1, lat2, lon2) -> float:
@@ -166,6 +169,26 @@ def load_sinkhole_stats() -> dict:
     return counts
 
 
+def load_storm_surge_stats() -> dict:
+    """Return {county: {cat1_ft, cat2_ft, cat3_ft, cat4_ft, cat5_ft}} from storm_surge.csv."""
+    zero = {"cat1_ft": 0, "cat2_ft": 0, "cat3_ft": 0, "cat4_ft": 0, "cat5_ft": 0}
+    result = {c: dict(zero) for c in FLORIDA_COUNTIES}
+    if not os.path.exists(PATHS["storm_surge"]):
+        return result
+    with open(PATHS["storm_surge"], newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            county = row.get("county", "").strip()
+            if county in result:
+                result[county] = {
+                    "cat1_ft": int(row.get("cat1_ft") or 0),
+                    "cat2_ft": int(row.get("cat2_ft") or 0),
+                    "cat3_ft": int(row.get("cat3_ft") or 0),
+                    "cat4_ft": int(row.get("cat4_ft") or 0),
+                    "cat5_ft": int(row.get("cat5_ft") or 0),
+                }
+    return result
+
+
 def load_wildfire_stats() -> dict:
     """
     Compute per-county wildfire intensity score = count × avg_FRP
@@ -199,8 +222,9 @@ def load_wildfire_stats() -> dict:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("Building composite risk scores (6-factor model)...")
+    print("Building composite risk scores (7-factor model)...")
     h_stats = load_hurricane_stats()
+    sg_stats = load_storm_surge_stats()
     f_stats = load_flood_stats()
     s_stats = load_sealevel_stats()
     t_stats = load_tornado_stats()
@@ -216,6 +240,10 @@ def main():
         wind_score  = norm(h["max_wind_knots"], MAX_MAX_WIND)
         hurricane_score = round(0.6 * storm_score + 0.4 * wind_score, 3)
 
+        sg = sg_stats.get(county, {"cat1_ft": 0, "cat2_ft": 0, "cat3_ft": 0,
+                                    "cat4_ft": 0, "cat5_ft": 0})
+        surge_score = norm(sg["cat4_ft"], MAX_SURGE_FT)
+
         flood_score    = norm(f_stats.get(county, 0.0), MAX_SFHA_PCT)
         sealevel_score = norm(s_stats.get(county, 0.0), MAX_SLR_2100)
         tornado_score   = norm(t_stats.get(county, 0),   MAX_TORNADO_CNT)
@@ -228,6 +256,7 @@ def main():
 
         composite = round(
             WEIGHTS["hurricane"] * hurricane_score
+            + WEIGHTS["surge"]    * surge_score
             + WEIGHTS["flood"]    * flood_score
             + WEIGHTS["sealevel"] * sealevel_score
             + WEIGHTS["tornado"]  * tornado_score
@@ -241,6 +270,9 @@ def main():
             "storm_count":          h["storm_count"],
             "max_wind_knots":       h["max_wind_knots"],
             "hurricane_score":      hurricane_score,
+            "surge_cat4_ft":        sg["cat4_ft"],
+            "surge_cat5_ft":        sg["cat5_ft"],
+            "surge_score":          surge_score,
             "sfha_pct":             f_stats.get(county, 0.0),
             "flood_score":          flood_score,
             "slr_2100_m":           s_stats.get(county, 0.0),
@@ -259,6 +291,7 @@ def main():
 
     fieldnames = [
         "county", "storm_count", "max_wind_knots", "hurricane_score",
+        "surge_cat4_ft", "surge_cat5_ft", "surge_score",
         "sfha_pct", "flood_score", "slr_2100_m", "sealevel_score",
         "tornado_count", "tornado_score",
         "sinkhole_count", "sinkhole_score",
@@ -273,8 +306,8 @@ def main():
     print("\nTop 10 highest-risk counties:")
     for r in rows[:10]:
         print(f"  {r['county']:20s}  composite={r['composite_risk_score']:.2f}  "
-              f"storms={r['storm_count']}  flood={r['sfha_pct']:.0f}%  "
-              f"tornado={r['tornado_count']}  sinkholes={r['sinkhole_count']}  fires={r['fire_count']}")
+              f"hurricane={r['hurricane_score']:.2f}  surge={r['surge_score']:.2f}  "
+              f"flood={r['flood_score']:.2f}  Cat4={r['surge_cat4_ft']}ft")
 
 
 if __name__ == "__main__":
