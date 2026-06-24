@@ -97,6 +97,29 @@ ESRI_SATELLITE = (
     "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
 
+def score_to_hex(score: float) -> str:
+    """Map NRI score (0–100) to hex color using the same ramp as the PNG overlays."""
+    t = max(0.0, min(1.0, float(score) / 100.0))
+    stops = [
+        (0.0, (0,   68, 204)),   # #0044CC — blue (very low)
+        (0.2, (0,  187, 255)),   # #00BBFF — cyan
+        (0.4, (0,  255, 136)),   # #00FF88 — green
+        (0.6, (255, 255,   0)),  # #FFFF00 — yellow
+        (0.8, (255, 136,   0)),  # #FF8800 — orange
+        (1.0, (170,   0,   0)),  # #AA0000 — dark red (very high)
+    ]
+    for i in range(len(stops) - 1):
+        t0, c0 = stops[i]
+        t1, c1 = stops[i + 1]
+        if t <= t1 or i == len(stops) - 2:
+            frac = 0.0 if t1 == t0 else max(0.0, min(1.0, (t - t0) / (t1 - t0)))
+            r = int(round(c0[0] + frac * (c1[0] - c0[0])))
+            g = int(round(c0[1] + frac * (c1[1] - c0[1])))
+            b = int(round(c0[2] + frac * (c1[2] - c0[2])))
+            return f"#{r:02x}{g:02x}{b:02x}"
+    return "#aa0000"
+
+
 NRI_RATING_COLORS = {
     "Very High":          "#AA0000",
     "Relatively High":    "#FF4400",
@@ -288,19 +311,50 @@ def add_legend(m: folium.Map, layer: str, surge_cat: int = 4) -> None:
     m.get_root().html.add_child(folium.Element(html))
 
 
-def build_map(layer: str, rich_geojson: dict, surge_cat: int = 4) -> folium.Map:
+def build_map(
+    layer: str, rich_geojson: dict, df_risk: pd.DataFrame, surge_cat: int = 4
+) -> folium.Map:
     m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles=None)
     folium.TileLayer(tiles=ESRI_SATELLITE, attr="Esri World Imagery",
                      name="Satellite", max_zoom=19).add_to(m)
 
+    if layer != "Storm Surge":
+        # ── Layer 1: GeoJSON choropleth fill ──────────────────────────────────
+        # Each county polygon is filled with its risk color.  Because this uses
+        # the actual county boundary polygons, it is perfectly clipped to
+        # Florida's land — no color can appear over the ocean or Gulf.
+        score_col = LAYER_SCORE_COL.get(layer, "risk_score")
+        fips_scores: dict[str, float] = {}
+        for _, row in df_risk.iterrows():
+            fips = FLORIDA_FIPS.get(row["county"])
+            if fips:
+                fips_scores[fips] = float(row.get(score_col, 0) or 0)
+
+        def _choropleth_style(feat, fs=fips_scores):
+            return {
+                "fillColor":   score_to_hex(fs.get(feat["id"], 0)),
+                "fillOpacity": 0.55,
+                "color":       "transparent",
+                "weight":      0,
+            }
+
+        folium.GeoJson(rich_geojson, style_function=_choropleth_style).add_to(m)
+
+    # ── Layer 2: Smooth gradient PNG overlay ──────────────────────────────────
+    # Opacity is encoded in the PNG alpha channel (land=0.65, ocean=0).
+    # CSS opacity=1.0 is intentional — using CSS opacity < 1.0 causes some
+    # browser compositing pipelines to pre-composite transparent pixels against
+    # a background before dimming, producing a faint colored rectangle over the
+    # ocean.  With CSS opacity=1.0 the alpha channel is respected directly.
     png_name = f"surge_cat{surge_cat}.png" if layer == "Storm Surge" else LAYER_TO_PNG[layer]
     png_path = os.path.join(IMG_DIR, png_name)
     if os.path.exists(png_path):
         folium.raster_layers.ImageOverlay(
-            image=png_path, bounds=FL_BOUNDS, opacity=0.65,
+            image=png_path, bounds=FL_BOUNDS, opacity=1.0,
             name="risk_overlay", cross_origin=False, zindex=1,
         ).add_to(m)
 
+    # ── Layer 3: County outlines + tooltip + popup (transparent fill) ─────────
     make_county_layer(rich_geojson).add_to(m)
     add_legend(m, layer, surge_cat)
     return m
@@ -379,7 +433,7 @@ elif layer in ("Physical Hazard Exposure (EAL)", "Composite Risk"):
     st.info(f"**{layer}** — FEMA NRI 0–100 national percentile score. {diff}")
 
 # ── Map ────────────────────────────────────────────────────────────────────────
-risk_map = build_map(layer, rich_geojson, surge_cat)
+risk_map = build_map(layer, rich_geojson, df_risk, surge_cat)
 st_folium(risk_map, width=None, height=620, returned_objects=[])
 
 # ── Data table ─────────────────────────────────────────────────────────────────

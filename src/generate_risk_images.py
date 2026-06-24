@@ -120,6 +120,13 @@ SIGMA = {
 
 MAX_SURGE_FT = 20.0  # Gulf County Cat 5 ceiling — used for fixed normalization
 
+# Opacity encoded directly in the PNG alpha channel so CSS opacity can stay at 1.0.
+# Using CSS opacity < 1.0 on an ImageOverlay causes some browser compositing pipelines
+# to pre-composite transparent (α=0) pixels against a background before dimming,
+# producing a faint colored rectangle over the ocean.  With CSS opacity=1.0, transparent
+# pixels are composited as-is and remain fully transparent.
+OVERLAY_OPACITY = 0.65
+
 
 # ── GeoJSON / land mask ────────────────────────────────────────────────────────
 
@@ -268,7 +275,7 @@ def raster_to_png(
 
     norm_arr = np.clip((raster - vmin) / (vmax - vmin), 0.0, 1.0)
     rgba = cmap(norm_arr)                           # (H, W, 4) float64
-    rgba[:, :, 3] = np.where(visible, 1.0, 0.0)
+    rgba[:, :, 3] = np.where(visible, OVERLAY_OPACITY, 0.0)
 
     img = (rgba * 255).clip(0, 255).astype(np.uint8)
     Image.fromarray(img, "RGBA").save(out_path)
