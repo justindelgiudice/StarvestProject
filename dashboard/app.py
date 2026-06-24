@@ -1,19 +1,20 @@
 """
 TerraRisk — Florida Climate Risk Intelligence Dashboard
 
-Layers (radio toggle):
-  Overall Risk | Hurricane Tracks | Tornadoes | Sinkholes | Flood Zones | Sea Level Rise | Wildfire
+Risk data: FEMA National Risk Index (NRI) — official federal hazard risk scores
+           https://www.fema.gov/emergency-managers/practitioners/resilience-analysis-and-planning-tool
 
-Each layer is a pre-rendered RGBA PNG (scipy KDE + Gaussian smoothed, clipped to
-Florida land) displayed as a Folium ImageOverlay at 0.6 opacity over Esri satellite.
-Produces a smooth weather-radar appearance at any zoom — no heatmap blobs.
-County polygons are clickable — popup shows full risk breakdown.
+Scores are NRI percentile scores (0–100). Higher = greater risk nationally.
+EAL (Expected Annual Loss) is the primary layer — pure physical exposure, no social adjustment.
+RISK (Composite) adjusts EAL by community resilience and social vulnerability.
+
+Raster overlays: smooth RGBA PNGs (scipy IDW + Gaussian smoothed, clipped to FL land).
+County polygons are clickable — popup shows full NRI risk breakdown.
 """
 
 import os
 
 import folium
-import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -23,31 +24,54 @@ from streamlit_folium import st_folium
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 PATHS = {
-    "risk":       os.path.join(ROOT, "data", "processed", "county_risk_scores.csv"),
-    "flood":      os.path.join(ROOT, "data", "raw",       "flood_zones.csv"),
-    "tornadoes":  os.path.join(ROOT, "data", "raw",       "tornadoes.csv"),
-    "surge":      os.path.join(ROOT, "data", "raw",       "storm_surge.csv"),
+    "risk":   os.path.join(ROOT, "data", "processed", "county_risk_scores.csv"),
+    "surge":  os.path.join(ROOT, "data", "raw",       "storm_surge.csv"),
 }
 IMG_DIR = os.path.join(ROOT, "data", "processed")
 
-# Florida bounding box — must match generate_risk_images.py
 FL_BOUNDS = [[24.4, -87.7], [31.2, -79.9]]
 
-# PNG file for each layer toggle (Storm Surge uses dynamic surge_cat{n}.png)
+# Layer name → PNG filename (Storm Surge uses dynamic surge_cat{n}.png)
 LAYER_TO_PNG = {
-    "Overall Risk":     "risk_overall.png",
-    "Hurricane Tracks": "risk_hurricane.png",
-    "Tornadoes":        "risk_tornado.png",
-    "Sinkholes":        "risk_sinkhole.png",
-    "Flood Zones":      "risk_flood.png",
-    "Sea Level Rise":   "risk_sealevel.png",
-    "Wildfire":         "risk_wildfire.png",
-    "Storm Surge":      "surge_cat4.png",  # default; overridden by category sub-toggle
+    "Expected Annual Loss": "risk_eal.png",
+    "Composite Risk":       "risk_risk.png",
+    "Hurricane":            "risk_hurricane.png",
+    "Coastal Flooding":     "risk_coastal_flood.png",
+    "Inland Flooding":      "risk_inland_flood.png",
+    "Tornado":              "risk_tornado.png",
+    "Wildfire":             "risk_wildfire.png",
+    "Strong Wind":          "risk_wind.png",
+    "Storm Surge":          "surge_cat4.png",
 }
 
 SURGE_PNGS = [f"surge_cat{i}.png" for i in range(1, 6)]
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+LAYER_CHOICES = list(LAYER_TO_PNG.keys())
+
+LAYER_LABEL = {
+    "Expected Annual Loss": "FEMA NRI EAL Score — physical hazard exposure, no social adjustment",
+    "Composite Risk":       "FEMA NRI Risk Score — EAL adjusted for social vulnerability & resilience",
+    "Hurricane":            "FEMA NRI HRCN Expected Annual Loss Score (0–100 national percentile)",
+    "Coastal Flooding":     "FEMA NRI CFLD Expected Annual Loss Score (storm surge + tidal)",
+    "Inland Flooding":      "FEMA NRI IFLD Expected Annual Loss Score (riverine flooding)",
+    "Tornado":              "FEMA NRI TRND Expected Annual Loss Score",
+    "Wildfire":             "FEMA NRI WFIR Expected Annual Loss Score",
+    "Strong Wind":          "FEMA NRI SWND Expected Annual Loss Score",
+    "Storm Surge":          "NOAA NHC SLOSH MEow v4 — max potential inundation depth (feet)",
+}
+
+# Layer → county_risk_scores.csv score column (for popup display)
+LAYER_SCORE_COL = {
+    "Expected Annual Loss": "eal_score",
+    "Composite Risk":       "risk_score",
+    "Hurricane":            "hurricane_score",
+    "Coastal Flooding":     "coastal_flood_score",
+    "Inland Flooding":      "inland_flood_score",
+    "Tornado":              "tornado_score",
+    "Wildfire":             "wildfire_score",
+    "Strong Wind":          "wind_score",
+}
+
 FLORIDA_FIPS = {
     "Alachua": "12001", "Baker": "12003", "Bay": "12005", "Bradford": "12007",
     "Brevard": "12009", "Broward": "12011", "Calhoun": "12013", "Charlotte": "12015",
@@ -68,60 +92,21 @@ FLORIDA_FIPS = {
     "Wakulla": "12129", "Walton": "12131", "Washington": "12133",
 }
 
-COUNTY_CENTROIDS = {
-    "Alachua": (29.67, -82.33), "Baker": (30.33, -82.30), "Bay": (30.22, -85.65),
-    "Bradford": (29.94, -82.17), "Brevard": (28.26, -80.72), "Broward": (26.07, -80.25),
-    "Calhoun": (30.41, -85.20), "Charlotte": (26.95, -82.03), "Citrus": (28.84, -82.50),
-    "Clay": (30.00, -81.87), "Collier": (25.90, -81.30), "Columbia": (30.23, -82.62),
-    "DeSoto": (27.18, -81.80), "Dixie": (29.58, -83.17), "Duval": (30.37, -81.65),
-    "Escambia": (30.61, -87.34), "Flagler": (29.47, -81.27), "Franklin": (29.84, -84.83),
-    "Gadsden": (30.58, -84.62), "Gilchrist": (29.72, -82.79), "Glades": (26.96, -81.19),
-    "Gulf": (29.92, -85.18), "Hamilton": (30.49, -82.98), "Hardee": (27.49, -81.79),
-    "Hendry": (26.50, -81.31), "Hernando": (28.56, -82.46), "Highlands": (27.34, -81.34),
-    "Hillsborough": (27.90, -82.35), "Holmes": (30.87, -85.81), "Indian River": (27.70, -80.57),
-    "Jackson": (30.72, -85.20), "Jefferson": (30.42, -83.90), "Lafayette": (29.98, -83.20),
-    "Lake": (28.77, -81.71), "Lee": (26.54, -81.76), "Leon": (30.46, -84.29),
-    "Levy": (29.28, -82.78), "Liberty": (30.24, -84.88), "Madison": (30.47, -83.47),
-    "Manatee": (27.47, -82.35), "Marion": (29.21, -82.06), "Martin": (27.07, -80.41),
-    "Miami-Dade": (25.55, -80.63), "Monroe": (24.56, -81.36), "Nassau": (30.61, -81.77),
-    "Okaloosa": (30.65, -86.51), "Okeechobee": (27.39, -80.90), "Orange": (28.49, -81.26),
-    "Osceola": (27.84, -81.11), "Palm Beach": (26.65, -80.30), "Pasco": (28.30, -82.44),
-    "Pinellas": (27.88, -82.73), "Polk": (27.94, -81.68), "Putnam": (29.62, -81.74),
-    "St. Johns": (29.95, -81.44), "St. Lucie": (27.38, -80.43), "Santa Rosa": (30.68, -86.98),
-    "Sarasota": (27.19, -82.37), "Seminole": (28.71, -81.22), "Sumter": (28.71, -82.08),
-    "Suwannee": (30.19, -83.00), "Taylor": (30.06, -83.61), "Union": (30.04, -82.37),
-    "Volusia": (29.03, -81.18), "Wakulla": (30.10, -84.37), "Walton": (30.58, -86.13),
-    "Washington": (30.60, -85.67),
-}
-
 ESRI_SATELLITE = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/"
     "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
 
-LAYER_CHOICES = [
-    "Overall Risk",
-    "Storm Surge",
-    "Hurricane Tracks",
-    "Flood Zones",
-    "Sea Level Rise",
-    "Tornadoes",
-    "Sinkholes",
-    "Wildfire",
-]
-
-LAYER_LABEL = {
-    "Overall Risk":     "Composite of all risk factors (7-factor model)",
-    "Storm Surge":      "NOAA NHC SLOSH MEow v4 — max inundation depth (feet)",
-    "Hurricane Tracks": "Wind speed intensity (knots), 1950–2025",
-    "Tornadoes":        "EF scale, NOAA SPC 1950–2023",
-    "Sinkholes":        "FGS county reports (synthetic coords)",
-    "Flood Zones":      "FEMA NFHL SFHA % by county",
-    "Sea Level Rise":   "IPCC AR6 intermediate scenario, 2100",
-    "Wildfire":         "NASA FIRMS MODIS + FFS historical (2000–2023)",
+NRI_RATING_COLORS = {
+    "Very High":          "#AA0000",
+    "Relatively High":    "#FF4400",
+    "High":               "#FF4400",
+    "Relatively Moderate":"#FF8800",
+    "Moderate":           "#FF8800",
+    "Relatively Low":     "#FFFF00",
+    "Low":                "#00FF88",
+    "Very Low":           "#00BBFF",
 }
-
-SURGE_CAT_LABEL = {1: "Cat 1", 2: "Cat 2", 3: "Cat 3", 4: "Cat 4", 5: "Cat 5"}
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -144,18 +129,17 @@ def load_florida_geojson() -> dict:
 def load_risk_scores() -> pd.DataFrame:
     df = pd.read_csv(PATHS["risk"])
     df["fips"] = df["county"].map(FLORIDA_FIPS)
+    # Ensure numeric score columns are float
+    for col in ["eal_score","risk_score","hurricane_score","coastal_flood_score",
+                "inland_flood_score","tornado_score","wildfire_score","wind_score",
+                "sovi_score","resl_score"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df
 
 
 @st.cache_data
-def load_flood_zones() -> pd.DataFrame:
-    path = PATHS["flood"]
-    return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
-
-
-@st.cache_data
 def load_surge_data() -> dict:
-    """Return {county: {cat1_ft, ..., cat5_ft}} from storm_surge.csv."""
     path = PATHS["surge"]
     if not os.path.exists(path):
         return {}
@@ -163,8 +147,6 @@ def load_surge_data() -> dict:
     return {
         row["county"]: {
             "cat1_ft": int(row.get("cat1_ft", 0) or 0),
-            "cat2_ft": int(row.get("cat2_ft", 0) or 0),
-            "cat3_ft": int(row.get("cat3_ft", 0) or 0),
             "cat4_ft": int(row.get("cat4_ft", 0) or 0),
             "cat5_ft": int(row.get("cat5_ft", 0) or 0),
         }
@@ -172,123 +154,55 @@ def load_surge_data() -> dict:
     }
 
 
-@st.cache_data
-def compute_tornado_counts(_df_tornadoes: pd.DataFrame) -> dict:
-    """Approximate per-county tornado count via nearest county centroid."""
-    counts: dict = {c: 0 for c in COUNTY_CENTROIDS}
-    if _df_tornadoes.empty:
-        return counts
-    ctr_lats = np.array([v[0] for v in COUNTY_CENTROIDS.values()], dtype=np.float32)
-    ctr_lons = np.array([v[1] for v in COUNTY_CENTROIDS.values()], dtype=np.float32)
-    ctr_names = list(COUNTY_CENTROIDS.keys())
-    for _, row in _df_tornadoes.iterrows():
-        dlat = ctr_lats - float(row["latitude"])
-        dlon = ctr_lons - float(row["longitude"])
-        idx = int(np.argmin(dlat ** 2 + dlon ** 2))
-        counts[ctr_names[idx]] += 1
-    return counts
-
-
-# ── Choropleth helpers ─────────────────────────────────────────────────────────
-
-def sfha_color(pct: float) -> str:
-    """Map SFHA% (0-100) to a radar-scale hex color."""
-    if pct <= 0:
-        return "#1a1a6e"   # near-zero flood risk: deep navy
-    if pct < 10:
-        return "#0000FF"
-    if pct < 25:
-        return "#00CCFF"
-    if pct < 40:
-        return "#00FF88"
-    if pct < 55:
-        return "#FFFF00"
-    if pct < 70:
-        return "#FF8800"
-    if pct < 85:
-        return "#FF2200"
-    return "#AA0000"
-
-
 # ── GeoJSON enrichment ─────────────────────────────────────────────────────────
 
-def enrich_geojson(
-    geojson: dict,
-    df_risk: pd.DataFrame,
-    df_flood: pd.DataFrame,
-    tornado_counts: dict,
-    surge_data: dict,
-) -> dict:
-    """Embed all popup and style fields into each county feature's properties."""
-    risk_by_fips: dict = {}
-    for _, row in df_risk.iterrows():
-        risk_by_fips[row["fips"]] = row.to_dict()
-
-    flood_by_county: dict = {}
-    if not df_flood.empty:
-        for _, row in df_flood.iterrows():
-            flood_by_county[row["county"]] = float(row.get("sfha_pct") or 0)
+def enrich_geojson(geojson: dict, df_risk: pd.DataFrame, surge_data: dict) -> dict:
+    risk_by_fips = {row["fips"]: row.to_dict() for _, row in df_risk.iterrows()}
 
     enriched = []
     for feat in geojson["features"]:
         fips = feat["id"]
         d = risk_by_fips.get(fips, {})
         county = d.get("county", fips)
-        score = float(d.get("composite_risk_score", 0))
-        sfha = flood_by_county.get(county, float(d.get("sfha_pct", 0) or 0))
-        slr = float(d.get("slr_2100_m", 0) or 0)
-        torns = tornado_counts.get(county, 0)
-        sinkholes = int(d.get("sinkhole_count", 0))
-        fires = int(d.get("fire_count", 0))
         sg = surge_data.get(county, {})
         cat4 = sg.get("cat4_ft", 0)
         surge_label = f"{cat4} ft" if cat4 > 0 else "< 1 ft (inland)"
+
+        def _fmt(col, decimals=1):
+            v = d.get(col)
+            return f"{float(v):.{decimals}f}" if v not in (None, "", float("nan")) else "N/A"
 
         enriched.append({
             **feat,
             "properties": {
                 "County":              county,
-                "Composite Risk":      f"{score:.1f} / 10",
-                "Hurricane Score":     f"{float(d.get('hurricane_score', 0)):.2f}",
-                "Surge Score":         f"{float(d.get('surge_score', 0)):.2f}",
+                "EAL Score":           _fmt("eal_score"),
+                "EAL Rating":          d.get("eal_rating", ""),
+                "Risk Score":          _fmt("risk_score"),
+                "Risk Rating":         d.get("risk_rating", ""),
+                "Hurricane":           _fmt("hurricane_score"),
+                "Coastal Flood":       _fmt("coastal_flood_score"),
+                "Inland Flood":        _fmt("inland_flood_score"),
+                "Tornado":             _fmt("tornado_score"),
+                "Wildfire":            _fmt("wildfire_score"),
+                "Strong Wind":         _fmt("wind_score"),
+                "Social Vulnerability":_fmt("sovi_score"),
+                "Community Resilience":_fmt("resl_score"),
                 "Storm Surge (Cat 4)": surge_label,
-                "Flood Zone (SFHA)":   f"{sfha:.1f}%",
-                "Sea Level 2100":      f"{slr:.2f}m",
-                "Storms (1950+)":      int(d.get("storm_count", 0)),
-                "Tornadoes":           torns,
-                "Sinkholes":           sinkholes,
-                "Wildfire Events":     fires,
-                "_sfha_pct":           sfha,
-                "_score":              score,
+                "_eal":                float(d.get("eal_score", 0) or 0),
+                "_risk":               float(d.get("risk_score", 0) or 0),
+                "_rating":             d.get("eal_rating", ""),
             },
         })
     return {"type": "FeatureCollection", "features": enriched}
 
 
-# ── Map builder ────────────────────────────────────────────────────────────────
+# ── Map helpers ────────────────────────────────────────────────────────────────
 
-def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
-    """GeoJson layer providing county borders, tooltip (hover), and popup (click)."""
-    is_flood = (layer == "Flood Zones")
-
-    def style_fn(feat):
-        if is_flood:
-            return {
-                "fillColor":   sfha_color(feat["properties"].get("_sfha_pct", 0)),
-                "fillOpacity": 0.78,
-                "color":       "rgba(255,255,255,0.55)",
-                "weight":      0.9,
-            }
-        return {
-            "fillColor":   "transparent",
-            "fillOpacity": 0.0,
-            "color":       "rgba(255,255,255,0.30)",
-            "weight":      0.8,
-        }
-
+def make_county_layer(rich_geojson: dict) -> folium.GeoJson:
     tooltip = folium.GeoJsonTooltip(
-        fields=["County", "Composite Risk", "Flood Zone (SFHA)"],
-        aliases=["County:", "Risk:", "SFHA:"],
+        fields=["County", "EAL Score", "Risk Rating"],
+        aliases=["County:", "EAL Score:", "NRI Rating:"],
         sticky=True,
         style=(
             "font-family:sans-serif;font-size:12px;"
@@ -296,48 +210,43 @@ def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
             "border:none;border-radius:5px;padding:6px 10px;"
         ),
     )
-
     popup = folium.GeoJsonPopup(
         fields=[
-            "County", "Composite Risk", "Hurricane Score",
-            "Storm Surge (Cat 4)", "Surge Score",
-            "Flood Zone (SFHA)", "Sea Level 2100", "Storms (1950+)",
-            "Tornadoes", "Sinkholes", "Wildfire Events",
+            "County",
+            "EAL Score", "EAL Rating",
+            "Risk Score", "Risk Rating",
+            "Hurricane", "Coastal Flood", "Inland Flood",
+            "Tornado", "Wildfire", "Strong Wind",
+            "Storm Surge (Cat 4)",
+            "Social Vulnerability", "Community Resilience",
         ],
         aliases=[
-            "County:", "Composite Risk:", "Hurricane Score:",
-            "Storm Surge (Cat 4):", "Surge Score:",
-            "Flood Zone (SFHA):", "Sea Level Rise 2100:", "Storms (1950+):",
-            "Tornadoes:", "Sinkholes:", "Wildfire Events:",
+            "County:",
+            "EAL Score (0–100):", "EAL Rating:",
+            "Risk Score (0–100):", "Risk Rating:",
+            "Hurricane:", "Coastal Flooding:", "Inland Flooding:",
+            "Tornado:", "Wildfire:", "Strong Wind:",
+            "Storm Surge (Cat 4):",
+            "Social Vulnerability:", "Community Resilience:",
         ],
-        style=(
-            "font-family:sans-serif;font-size:13px;"
-            "min-width:240px;max-width:320px;"
-        ),
-        max_width=320,
+        style="font-family:sans-serif;font-size:13px;min-width:260px;max-width:340px;",
+        max_width=340,
     )
-
     return folium.GeoJson(
         rich_geojson,
-        style_function=style_fn,
+        style_function=lambda _: {
+            "fillColor":   "transparent",
+            "fillOpacity": 0.0,
+            "color":       "rgba(255,255,255,0.30)",
+            "weight":      0.8,
+        },
         tooltip=tooltip,
         popup=popup,
     )
 
 
 def add_legend(m: folium.Map, layer: str, surge_cat: int = 4) -> None:
-    if layer == "Flood Zones":
-        swatches = [
-            ("#AA0000", "85–100% SFHA"),
-            ("#FF2200", "70–85%"),
-            ("#FF8800", "55–70%"),
-            ("#FFFF00", "40–55%"),
-            ("#00FF88", "25–40%"),
-            ("#00CCFF", "10–25%"),
-            ("#0000FF", "0–10%"),
-            ("#1a1a6e",  "< 1% / no data"),
-        ]
-    elif layer == "Storm Surge":
+    if layer == "Storm Surge":
         swatches = [
             ("#00052A", "9+ ft (extreme)"),
             ("#001A6E", "6–9 ft (high)"),
@@ -345,21 +254,19 @@ def add_legend(m: folium.Map, layer: str, surge_cat: int = 4) -> None:
             ("#6DB8F0", "1–3 ft (low)"),
             ("#C8E8FF", "< 1 ft (minimal)"),
         ]
+        subtitle = f"Category {surge_cat} — max potential depth (feet)"
     else:
         swatches = [
-            ("#AA0000", "Extreme"),
-            ("#FF2200", "High"),
-            ("#FF8800", "Elevated"),
-            ("#FFFF00", "Moderate"),
+            ("#AA0000", "Very High (top 10%)"),
+            ("#FF4400", "Relatively High"),
+            ("#FF8800", "Relatively Moderate"),
+            ("#FFFF00", "Relatively Low"),
             ("#00FF88", "Low"),
-            ("#00CCFF", "Minimal"),
+            ("#00BBFF", "Very Low"),
         ]
+        subtitle = LAYER_LABEL[layer]
 
-    label_text = LAYER_LABEL[layer]
-    if layer == "Storm Surge":
-        label_text = f"Category {surge_cat} — max surge depth (feet)"
-
-    rows = "".join(
+    rows_html = "".join(
         f'<span style="background:{c};padding:2px 10px;border-radius:2px;'
         f'color:{"#000" if c in ("#FFFF00","#00FF88") else "#fff"}">&nbsp;</span>'
         f'&nbsp;{label}<br>'
@@ -372,10 +279,10 @@ def add_legend(m: folium.Map, layer: str, surge_cat: int = 4) -> None:
             font-family:sans-serif;font-size:12px;line-height:2.0;
             pointer-events:none;">
     <b style="font-size:13px;">{layer}</b><br>
-    <span style="color:#aaa;font-size:11px;">{label_text}</span><br>
+    <span style="color:#aaa;font-size:10px;">{subtitle}</span><br>
     <hr style="border-color:rgba(255,255,255,0.2);margin:6px 0;">
-    {rows}
-    <span style="color:#888;font-size:10px;">Click county for full breakdown</span>
+    {rows_html}
+    <span style="color:#888;font-size:10px;">Click county for full NRI breakdown</span>
 </div>
 """
     m.get_root().html.add_child(folium.Element(html))
@@ -383,33 +290,18 @@ def add_legend(m: folium.Map, layer: str, surge_cat: int = 4) -> None:
 
 def build_map(layer: str, rich_geojson: dict, surge_cat: int = 4) -> folium.Map:
     m = folium.Map(location=[27.8, -83.5], zoom_start=7, tiles=None)
+    folium.TileLayer(tiles=ESRI_SATELLITE, attr="Esri World Imagery",
+                     name="Satellite", max_zoom=19).add_to(m)
 
-    folium.TileLayer(
-        tiles=ESRI_SATELLITE,
-        attr="Esri World Imagery",
-        name="Satellite",
-        max_zoom=19,
-    ).add_to(m)
-
-    # Smooth raster overlay — looks like weather radar, works at any zoom
-    if layer == "Storm Surge":
-        png_name = f"surge_cat{surge_cat}.png"
-    else:
-        png_name = LAYER_TO_PNG[layer]
+    png_name = f"surge_cat{surge_cat}.png" if layer == "Storm Surge" else LAYER_TO_PNG[layer]
     png_path = os.path.join(IMG_DIR, png_name)
     if os.path.exists(png_path):
         folium.raster_layers.ImageOverlay(
-            image=png_path,
-            bounds=FL_BOUNDS,
-            opacity=0.65,
-            name="risk_overlay",
-            cross_origin=False,
-            zindex=1,
+            image=png_path, bounds=FL_BOUNDS, opacity=0.65,
+            name="risk_overlay", cross_origin=False, zindex=1,
         ).add_to(m)
 
-    # County borders + hover tooltip + click popup (transparent polygon fill)
-    make_county_layer(rich_geojson, layer).add_to(m)
-
+    make_county_layer(rich_geojson).add_to(m)
     add_legend(m, layer, surge_cat)
     return m
 
@@ -418,8 +310,13 @@ def build_map(layer: str, rich_geojson: dict, surge_cat: int = 4) -> folium.Map:
 
 st.set_page_config(page_title="TerraRisk", layout="wide")
 st.title("TerraRisk — Florida Climate Risk Intelligence")
-st.caption("Grid-based hazard maps clipped to Florida land · Click any county for full risk breakdown.")
+st.caption(
+    "Risk scores: FEMA National Risk Index (NRI) — 0–100 national percentile. "
+    "Higher = greater risk relative to all US counties. "
+    "Click any county for full breakdown."
+)
 
+# Check required files
 missing_imgs = [
     f for f in list(LAYER_TO_PNG.values()) + SURGE_PNGS
     if not os.path.exists(os.path.join(IMG_DIR, f))
@@ -428,11 +325,7 @@ if not os.path.exists(PATHS["risk"]) or missing_imgs:
     st.error(
         "Required data missing. Run the full pipeline:\n\n"
         "```\n"
-        "python src/fetch_hurricanes.py\n"
-        "python src/fetch_flood_zones.py\n"
-        "python src/fetch_sealevel.py\n"
-        "python src/fetch_tornadoes.py\n"
-        "python src/fetch_sinkholes.py\n"
+        "python src/fetch_fema_nri.py\n"
         "python src/build_risk_score.py\n"
         "python src/fetch_storm_surge.py\n"
         "python src/generate_risk_grid.py\n"
@@ -441,33 +334,25 @@ if not os.path.exists(PATHS["risk"]) or missing_imgs:
     )
     st.stop()
 
-df_risk  = load_risk_scores()
-df_flood = load_flood_zones()
-geojson  = load_florida_geojson()
+df_risk    = load_risk_scores()
 surge_data = load_surge_data()
-
-df_tornadoes   = pd.read_csv(PATHS["tornadoes"]) if os.path.exists(PATHS["tornadoes"]) else pd.DataFrame()
-tornado_counts = compute_tornado_counts(df_tornadoes)
-
-rich_geojson = enrich_geojson(geojson, df_risk, df_flood, tornado_counts, surge_data)
+geojson    = load_florida_geojson()
+rich_geojson = enrich_geojson(geojson, df_risk, surge_data)
 
 # ── Metrics row ────────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5 = st.columns(5)
+top_eal = df_risk.loc[df_risk["eal_score"].idxmax()]
+top_risk = df_risk.loc[df_risk["risk_score"].idxmax()]
 c1.metric("Counties Scored", len(df_risk))
-c2.metric("Avg Risk Score", f"{df_risk['composite_risk_score'].mean():.2f}")
-top_row = df_risk.loc[df_risk["composite_risk_score"].idxmax()]
-c3.metric("Highest Risk", f"{top_row['county']} ({top_row['composite_risk_score']:.1f})")
-coastal_surge = sum(1 for v in surge_data.values() if v.get("cat4_ft", 0) > 0)
-c4.metric("Surge-Exposed Counties", coastal_surge)
-c5.metric("Tornado Events", f"{len(df_tornadoes):,}" if not df_tornadoes.empty else "—")
+c2.metric("Highest EAL Score", f"{top_eal['county']} ({top_eal['eal_score']:.0f})")
+c3.metric("Highest Risk Score", f"{top_risk['county']} ({top_risk['risk_score']:.0f})")
+coastal = sum(1 for v in surge_data.values() if v.get("cat4_ft", 0) > 0)
+c4.metric("Surge-Exposed Counties", coastal)
+c5.metric("Data Source", "FEMA NRI")
 
 # ── Layer toggle ───────────────────────────────────────────────────────────────
-layer = st.radio(
-    "**Risk Layer**",
-    options=LAYER_CHOICES,
-    horizontal=True,
-    label_visibility="collapsed",
-)
+layer = st.radio("**Risk Layer**", options=LAYER_CHOICES, horizontal=True,
+                 label_visibility="collapsed")
 
 # ── Storm Surge sub-controls ───────────────────────────────────────────────────
 surge_cat = 4
@@ -475,42 +360,49 @@ if layer == "Storm Surge":
     col_note, col_cat = st.columns([3, 2])
     with col_cat:
         surge_cat = st.select_slider(
-            "Hurricane Category",
-            options=[1, 2, 3, 4, 5],
-            value=4,
+            "Hurricane Category", options=[1, 2, 3, 4, 5], value=4,
             format_func=lambda n: f"Cat {n}",
         )
     with col_note:
         st.info(
-            "Shows maximum potential storm surge depth (feet) based on NOAA NHC SLOSH MEow v4 analysis. "
-            "Inland counties with no surge exposure appear transparent. "
-            "Category 4 represents a realistic worst-case for most Florida coastal counties."
+            "Maximum potential storm surge depth from NOAA NHC SLOSH MEow v4. "
+            "Inland counties appear transparent. Cat 4 is the realistic worst-case "
+            "for most Florida coastal counties."
         )
+elif layer in ("Expected Annual Loss", "Composite Risk"):
+    diff = "EAL excludes social vulnerability and community resilience adjustments." \
+           if layer == "Expected Annual Loss" else \
+           "Risk Score = EAL adjusted downward by high community resilience and " \
+           "upward by high social vulnerability."
+    st.info(
+        f"**{layer}** — FEMA NRI 0–100 national percentile score. {diff}"
+    )
 
 # ── Map ────────────────────────────────────────────────────────────────────────
 risk_map = build_map(layer, rich_geojson, surge_cat)
 st_folium(risk_map, width=None, height=620, returned_objects=[])
 
 # ── Data table ─────────────────────────────────────────────────────────────────
-with st.expander("County Risk Score Table"):
+with st.expander("County NRI Score Table (FEMA official data, 0–100 national percentile)"):
     display_cols = {
         "county":               "County",
-        "composite_risk_score": "Composite (0–10)",
+        "eal_score":            "EAL Score",
+        "eal_rating":           "EAL Rating",
+        "risk_score":           "Risk Score",
+        "risk_rating":          "Risk Rating",
         "hurricane_score":      "Hurricane",
-        "surge_score":          "Storm Surge",
-        "surge_cat4_ft":        "Cat 4 Surge (ft)",
-        "flood_score":          "Flood Zone",
-        "sealevel_score":       "Sea Level",
+        "coastal_flood_score":  "Coastal Flood",
+        "inland_flood_score":   "Inland Flood",
         "tornado_score":        "Tornado",
-        "sinkhole_score":       "Sinkhole",
         "wildfire_score":       "Wildfire",
-        "storm_count":          "Storms",
-        "sfha_pct":             "SFHA %",
+        "wind_score":           "Strong Wind",
+        "sovi_score":           "Social Vuln.",
+        "resl_score":           "Resilience",
     }
     show = [c for c in display_cols if c in df_risk.columns]
     st.dataframe(
         df_risk[show]
-        .sort_values("composite_risk_score", ascending=False)
+        .sort_values("eal_score", ascending=False)
         .reset_index(drop=True)
         .rename(columns={c: display_cols[c] for c in show}),
         use_container_width=True,
@@ -518,7 +410,8 @@ with st.expander("County Risk Score Table"):
     )
 
 st.caption(
-    "Sources: NOAA HURDAT2 · NOAA NHC SLOSH MEow v4 (storm surge) · NOAA SPC Tornado Database · "
-    "Florida Geological Survey · FEMA NFHL · NOAA Tide Gauges · IPCC AR6 · "
-    "NASA FIRMS MODIS · Florida Forest Service · Esri World Imagery"
+    "Risk scores: FEMA National Risk Index (NRI) v2023 — national percentile scores (0–100). "
+    "Storm surge: NOAA NHC SLOSH MEow v4. "
+    "Raster overlays: scipy IDW interpolation from county centroids + Gaussian smoothing. "
+    "Basemap: Esri World Imagery."
 )

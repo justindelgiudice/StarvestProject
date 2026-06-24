@@ -40,6 +40,7 @@ PROC = os.path.join(ROOT, "data", "processed")
 GEOJSON_CACHE = os.path.join(RAW,  "fl_counties.geojson")
 GRID_CSV      = os.path.join(PROC, "risk_grid.csv")
 RISK_CSV      = os.path.join(PROC, "county_risk_scores.csv")
+SURGE_CSV     = os.path.join(ROOT, "data", "raw", "storm_surge.csv")
 
 # Florida bounding box — matches generate_risk_grid.py land mask
 LAT_MIN, LAT_MAX = 24.4, 31.2
@@ -104,16 +105,17 @@ SURGE_CMAP = mcolors.LinearSegmentedColormap.from_list(
     )),
 )
 
-# Gaussian smoothing sigma (pixels). Larger = smoother surface.
+# Gaussian smoothing sigma (pixels). All NRI layers use county centroids → similar smoothing.
 SIGMA = {
-    "overall":   5,
-    "hurricane": 6,
-    "tornado":   6,
-    "sinkhole":  5,
-    "sealevel":  5,
-    "wildfire":  6,
-    "flood":     9,   # only 67 county centroids → needs more smoothing
-    "surge":     8,   # county centroids; smooth coast-to-inland gradient
+    "eal":           6,
+    "risk":          6,
+    "hurricane":     7,
+    "coastal_flood": 8,
+    "inland_flood":  7,
+    "tornado":       6,
+    "wildfire":      6,
+    "wind":          6,
+    "surge":         8,
 }
 
 MAX_SURGE_FT = 20.0  # Gulf County Cat 5 ceiling — used for fixed normalization
@@ -263,22 +265,26 @@ def main() -> None:
     print(f"  {n_land:,} / {IMG_H * IMG_W:,} pixels on land "
           f"({n_land / (IMG_H * IMG_W) * 100:.1f}%)")
 
-    # ── Grid-based layers ──────────────────────────────────────────────────────
+    # ── NRI grid-based layers ──────────────────────────────────────────────────
     print("Loading risk grid...")
     grid = pd.read_csv(GRID_CSV)
     g_lats = grid["lat"].values.astype(np.float32)
     g_lons = grid["lon"].values.astype(np.float32)
 
+    # name → grid CSV column; output → risk_{name}.png
     grid_layers = {
-        "overall":   "overall",
-        "hurricane": "hurricane",
-        "tornado":   "tornado",
-        "sinkhole":  "sinkhole",
-        "sealevel":  "sealevel",
-        "wildfire":  "wildfire",
-        "surge":     "surge",
+        "eal":           "eal_score",
+        "risk":          "risk_score",
+        "hurricane":     "hurricane_score",
+        "coastal_flood": "coastal_flood_score",
+        "inland_flood":  "inland_flood_score",
+        "tornado":       "tornado_score",
+        "wildfire":      "wildfire_score",
+        "wind":          "wind_score",
+        "surge":         "surge",
     }
 
+    n_generated = 0
     for name, col in grid_layers.items():
         if col not in grid.columns:
             print(f"  [SKIP] {name}: column '{col}' missing from grid CSV")
@@ -290,37 +296,12 @@ def main() -> None:
         out = os.path.join(PROC, f"risk_{name}.png")
         raster_to_png(raster, land_mask, out)
         print(f"    → {out}  ({time.time()-t1:.1f}s)")
-
-    # ── Flood layer (county centroids) ─────────────────────────────────────────
-    print("  [flood] loading county risk scores...")
-    risk_df = pd.read_csv(RISK_CSV)
-
-    flood_lats, flood_lons, flood_vals = [], [], []
-    for _, row in risk_df.iterrows():
-        county = row["county"]
-        if county not in COUNTY_CENTROIDS:
-            continue
-        clat, clon = COUNTY_CENTROIDS[county]
-        flood_lats.append(clat)
-        flood_lons.append(clon)
-        # Use normalised flood_score (0-10 → 0-1)
-        flood_vals.append(float(row.get("flood_score", 0)) / 10.0)
-
-    t1 = time.time()
-    print(f"  [flood] interpolating {len(flood_lats)} county centroids → {IMG_H}×{IMG_W}...")
-    f_lats = np.array(flood_lats, dtype=np.float32)
-    f_lons = np.array(flood_lons, dtype=np.float32)
-    f_vals = np.array(flood_vals, dtype=np.float32)
-    flood_raster = interpolate_smooth(f_lats, f_lons, f_vals, lats_2d, lons_2d, SIGMA["flood"])
-    out = os.path.join(PROC, "risk_flood.png")
-    raster_to_png(flood_raster, land_mask, out)
-    print(f"    → {out}  ({time.time()-t1:.1f}s)")
+        n_generated += 1
 
     # ── Storm surge — category-specific PNGs (Cat 1–5) ─────────────────────────
-    surge_csv = os.path.join(ROOT, "data", "raw", "storm_surge.csv")
-    if os.path.exists(surge_csv):
+    if os.path.exists(SURGE_CSV):
         print("  [surge] generating Cat 1–5 surge images...")
-        surge_df = pd.read_csv(surge_csv)
+        surge_df = pd.read_csv(SURGE_CSV)
         for cat_n in range(1, 6):
             col = f"cat{cat_n}_ft"
             t1 = time.time()
@@ -334,25 +315,25 @@ def main() -> None:
                     s_lons.append(clon)
                     s_vals.append(depth)
             if s_lats:
-                f_lats = np.array(s_lats, dtype=np.float32)
-                f_lons = np.array(s_lons, dtype=np.float32)
-                f_vals = np.array(s_vals, dtype=np.float32)
+                s_lats_arr = np.array(s_lats, dtype=np.float32)
+                s_lons_arr = np.array(s_lons, dtype=np.float32)
+                s_vals_arr = np.array(s_vals, dtype=np.float32)
                 surge_raster = interpolate_smooth(
-                    f_lats, f_lons, f_vals, lats_2d, lons_2d, SIGMA["surge"]
+                    s_lats_arr, s_lons_arr, s_vals_arr, lats_2d, lons_2d, SIGMA["surge"]
                 )
                 out = os.path.join(PROC, f"surge_cat{cat_n}.png")
                 raster_to_png(
                     surge_raster, land_mask, out,
                     cmap=SURGE_CMAP,
                     fixed_vmax=MAX_SURGE_FT,
-                    raw_threshold=0.4,  # hide inland areas with < 0.4 ft interpolated value
+                    raw_threshold=0.4,
                 )
                 print(f"    → {out}  ({time.time()-t1:.1f}s)")
+                n_generated += 1
     else:
         print("  [surge] storm_surge.csv not found — skipping surge images")
 
-    total_imgs = 7 + 1 + 5  # risk layers + flood + surge cats
-    print(f"\nGenerated {total_imgs} PNG images in {PROC}/  (total {time.time()-t0:.0f}s)")
+    print(f"\nGenerated {n_generated} PNG images in {PROC}/  (total {time.time()-t0:.0f}s)")
 
 
 if __name__ == "__main__":

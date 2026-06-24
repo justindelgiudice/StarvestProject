@@ -3,15 +3,14 @@
 src/generate_risk_grid.py
 
 Pre-compute a dense IDW risk grid covering all of Florida's land area.
-Grid: 0.05° spacing (~5km), clipped to Florida county polygons via PIP.
-Each point receives a 0-1 normalized risk score per layer:
-  overall, hurricane, tornado, sinkhole, sealevel
+Grid: 0.02° spacing (~2km), clipped to Florida county polygons via PIP.
 
-Run once before launching the dashboard:
+All layers are county-centroid IDW from FEMA NRI scores in county_risk_scores.csv.
+
+Run once (or after fetch_fema_nri.py + build_risk_score.py):
   python src/generate_risk_grid.py
 
-Output: data/processed/risk_grid.csv (~10-12k rows)
-Runtime: 30-90 seconds depending on machine.
+Output: data/processed/risk_grid.csv (~34K rows)
 """
 
 import csv
@@ -27,6 +26,8 @@ RAW           = os.path.join(ROOT, "data", "raw")
 PROC          = os.path.join(ROOT, "data", "processed")
 OUTPUT        = os.path.join(PROC, "risk_grid.csv")
 GEOJSON_CACHE = os.path.join(RAW, "fl_counties.geojson")
+RISK_CSV      = os.path.join(PROC, "county_risk_scores.csv")
+SURGE_CSV     = os.path.join(RAW,  "storm_surge.csv")
 
 FLORIDA_FIPS = {
     "12001","12003","12005","12007","12009","12011","12013","12015",
@@ -68,7 +69,7 @@ COUNTY_CENTROIDS = {
 
 LAT_MIN, LAT_MAX = 24.5, 31.0
 LON_MIN, LON_MAX = -87.6, -80.0
-STEP = 0.02   # ~2km spacing — dense enough that no individual dots visible at any zoom
+STEP = 0.02
 
 
 # ── GeoJSON / PIP ──────────────────────────────────────────────────────────────
@@ -94,13 +95,12 @@ def fetch_fl_geojson():
 
 
 def prep_polys(geojson):
-    """Extract (bbox, list-of-rings) per county feature for efficient PIP."""
     out = []
     for feat in geojson["features"]:
         geom = feat["geometry"]
         if geom["type"] == "Polygon":
             all_rings = [geom["coordinates"][0]]
-        else:  # MultiPolygon
+        else:
             all_rings = [poly[0] for poly in geom["coordinates"]]
         all_lons = [c[0] for r in all_rings for c in r]
         all_lats = [c[1] for r in all_rings for c in r]
@@ -112,11 +112,6 @@ def prep_polys(geojson):
 
 
 def pip_batch(test_lats, test_lons, ring):
-    """
-    Vectorized ray-casting PIP for N test points against one ring.
-    ring: float32 array (M, 2) with columns [lon, lat].
-    Returns bool array (N,).
-    """
     result = np.zeros(len(test_lats), dtype=bool)
     rlon = ring[:, 0]
     rlat = ring[:, 1]
@@ -136,7 +131,6 @@ def pip_batch(test_lats, test_lons, ring):
 
 
 def build_land_mask(all_lats, all_lons, polys):
-    """Return bool array: True where (lat, lon) falls on Florida land."""
     land = np.zeros(len(all_lats), dtype=bool)
     for poly in polys:
         mn_lat, mx_lat, mn_lon, mx_lon = poly["bbox"]
@@ -157,8 +151,7 @@ def build_land_mask(all_lats, all_lons, polys):
 
 # ── IDW ────────────────────────────────────────────────────────────────────────
 
-def idw_chunked(glat, glon, slat, slon, sval, power=3, chunk=800):
-    """Chunked inverse-distance weighting. Returns float32 array (N,)."""
+def idw_chunked(glat, glon, slat, slon, sval, power=2, chunk=800):
     slat = np.asarray(slat, np.float32)
     slon = np.asarray(slon, np.float32)
     sval = np.asarray(sval, np.float32)
@@ -166,7 +159,7 @@ def idw_chunked(glat, glon, slat, slon, sval, power=3, chunk=800):
     out = np.zeros(N, np.float32)
     for s in range(0, N, chunk):
         e = min(s + chunk, N)
-        dl = (glat[s:e, None] - slat) ** 2  # (chunk, M)
+        dl = (glat[s:e, None] - slat) ** 2
         do = (glon[s:e, None] - slon) ** 2
         d2 = np.maximum(dl + do, 1e-9)
         w = 1.0 / (d2 ** power)
@@ -174,11 +167,19 @@ def idw_chunked(glat, glon, slat, slon, sval, power=3, chunk=800):
     return out
 
 
-def norm01(arr):
-    lo, hi = float(arr.min()), float(arr.max())
-    if hi == lo:
-        return np.full_like(arr, 0.5)
-    return (arr - lo) / (hi - lo)
+# ── Score columns to generate as grid layers ───────────────────────────────────
+
+GRID_LAYERS = [
+    "eal_score",           # EAL (primary — pure physical hazard)
+    "risk_score",          # Composite risk (includes social factors)
+    "hurricane_score",     # HRCN_EALS
+    "coastal_flood_score", # CFLD_EALS
+    "inland_flood_score",  # IFLD_EALS
+    "tornado_score",       # TRND_EALS
+    "wildfire_score",      # WFIR_EALS
+    "wind_score",          # SWND_EALS
+    "surge",               # Cat 4 surge depth (from storm_surge.csv)
+]
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -192,7 +193,6 @@ def main():
     polys = prep_polys(gj)
     print(f"  {len(polys)} county polygons ({time.time()-t0:.1f}s)")
 
-    # Generate all candidate grid points
     lats_arr = np.arange(LAT_MIN, LAT_MAX + STEP / 2, STEP, dtype=np.float32)
     lons_arr = np.arange(LON_MIN, LON_MAX + STEP / 2, STEP, dtype=np.float32)
     mesh_lats, mesh_lons = np.meshgrid(lats_arr, lons_arr, indexing="ij")
@@ -200,151 +200,58 @@ def main():
     all_lons = mesh_lons.ravel()
     print(f"Testing {len(all_lats):,} candidates ({len(lats_arr)}×{len(lons_arr)})...")
 
-    # Vectorized PIP — clip to Florida land
     land = build_land_mask(all_lats, all_lons, polys)
     glat = all_lats[land]
     glon = all_lons[land]
     print(f"  {len(glat):,} land points retained ({time.time()-t0:.1f}s)")
 
-    # ── Layer 1: Overall risk from county composite scores ────────────────────
-    print("Computing overall risk...")
-    risk_by_county = {}
-    with open(os.path.join(PROC, "county_risk_scores.csv")) as f:
+    # ── Load NRI county scores ─────────────────────────────────────────────────
+    print("Loading NRI county scores...")
+    nri_scores: dict[str, dict] = {}
+    with open(RISK_CSV) as f:
         for row in csv.DictReader(f):
-            risk_by_county[row["county"]] = float(row["composite_risk_score"])
+            nri_scores[row["county"]] = row
 
-    ctr_lats, ctr_lons, ctr_vals = zip(*[
-        (clat, clon, risk_by_county.get(c, 5.0) / 10.0)
-        for c, (clat, clon) in COUNTY_CENTROIDS.items()
-    ])
-    overall = norm01(idw_chunked(glat, glon, ctr_lats, ctr_lons, ctr_vals, power=2))
-    print(f"  {overall.min():.3f}–{overall.max():.3f} ({time.time()-t0:.1f}s)")
-
-    # ── Layer 2: Hurricane (track points, weight = wind_knots / 165) ─────────
-    print("Computing hurricane risk...")
-    h_lats, h_lons, h_vals = [], [], []
-    with open(os.path.join(RAW, "hurricanes.csv")) as f:
-        for row in csv.DictReader(f):
-            try:
-                w = float(row["wind_knots"])
-                if w > 0:
-                    h_lats.append(float(row["latitude"]))
-                    h_lons.append(float(row["longitude"]))
-                    h_vals.append(min(1.0, w / 165.0))
-            except (ValueError, KeyError):
-                pass
-    hurricane = norm01(idw_chunked(glat, glon, h_lats, h_lons, h_vals, power=3))
-    print(f"  {hurricane.min():.3f}–{hurricane.max():.3f} ({time.time()-t0:.1f}s)")
-
-    # ── Layer 3: Tornado (touchdown, weight = (EF+0.5) / 5.5) ────────────────
-    print("Computing tornado risk...")
-    t_lats, t_lons, t_vals = [], [], []
-    with open(os.path.join(RAW, "tornadoes.csv")) as f:
-        for row in csv.DictReader(f):
-            try:
-                ef = max(0, int(row["ef_scale"]))
-                t_lats.append(float(row["latitude"]))
-                t_lons.append(float(row["longitude"]))
-                t_vals.append((ef + 0.5) / 5.5)
-            except (ValueError, KeyError):
-                pass
-    tornado = norm01(idw_chunked(glat, glon, t_lats, t_lons, t_vals, power=3))
-    print(f"  {tornado.min():.3f}–{tornado.max():.3f} ({time.time()-t0:.1f}s)")
-
-    # ── Layer 4: Sinkhole (county centroid IDW weighted by sinkhole count) ────
-    # Uniform-weight IDW always returns 1.0, so use county-level counts instead.
-    print("Computing sinkhole risk...")
-    count_by_county: dict[str, int] = {}
-    with open(os.path.join(RAW, "sinkholes.csv")) as f:
-        for row in csv.DictReader(f):
-            c = row.get("county", "")
-            if c:
-                count_by_county[c] = count_by_county.get(c, 0) + 1
-    max_count = max(count_by_county.values()) if count_by_county else 1
-    s_lats, s_lons, s_vals = [], [], []
-    for county, (clat, clon) in COUNTY_CENTROIDS.items():
-        cnt = count_by_county.get(county, 0)
-        if cnt > 0:
-            s_lats.append(clat)
-            s_lons.append(clon)
-            s_vals.append(cnt / max_count)
-    sinkhole = norm01(idw_chunked(glat, glon, s_lats, s_lons, s_vals, power=2))
-    print(f"  {sinkhole.min():.3f}–{sinkhole.max():.3f} ({time.time()-t0:.1f}s)")
-
-    # ── Layer 5: Sea level (county centroids, weight = SLR_2100 / 0.85) ──────
-    print("Computing sea level risk...")
-    slr_by_county = {}
-    with open(os.path.join(RAW, "sealevel.csv")) as f:
-        for row in csv.DictReader(f):
-            try:
-                slr_by_county[row["county"]] = float(row["projected_slr_2100_m"])
-            except (ValueError, KeyError):
-                pass
-
-    sl_lats, sl_lons, sl_vals = zip(*[
-        (clat, clon, min(1.0, slr_by_county.get(c, 0.65) / 0.85))
-        for c, (clat, clon) in COUNTY_CENTROIDS.items()
-    ])
-    sealevel = norm01(idw_chunked(glat, glon, sl_lats, sl_lons, sl_vals, power=2))
-    print(f"  {sealevel.min():.3f}–{sealevel.max():.3f} ({time.time()-t0:.1f}s)")
-
-    # ── Layer 6: Wildfire (fire points, weight = FRP / max_FRP) ──────────────
-    print("Computing wildfire risk...")
-    wf_lats, wf_lons, wf_vals = [], [], []
-    wf_path = os.path.join(RAW, "wildfires.csv")
-    if os.path.exists(wf_path):
-        with open(wf_path) as f:
+    surge_scores: dict[str, int] = {}
+    if os.path.exists(SURGE_CSV):
+        with open(SURGE_CSV) as f:
             for row in csv.DictReader(f):
-                try:
-                    wf_lats.append(float(row["latitude"]))
-                    wf_lons.append(float(row["longitude"]))
-                    wf_vals.append(float(row["frp"]))
-                except (ValueError, KeyError):
-                    pass
-    max_frp = max(wf_vals) if wf_vals else 1.0
-    wf_vals_n = [v / max_frp for v in wf_vals]
-    wildfire = norm01(idw_chunked(glat, glon, wf_lats, wf_lons, wf_vals_n, power=3, chunk=200))
-    print(f"  {wildfire.min():.3f}–{wildfire.max():.3f} ({time.time()-t0:.1f}s)")
+                surge_scores[row["county"]] = int(row.get("cat4_ft") or 0)
 
-    # ── Layer 7: Storm Surge Cat 4 (county centroid IDW) ──────────────────────
-    print("Computing storm surge risk...")
-    MAX_SURGE_FT = 20.0
-    sg_lats, sg_lons, sg_vals = [], [], []
-    sg_path = os.path.join(RAW, "storm_surge.csv")
-    if os.path.exists(sg_path):
-        with open(sg_path) as f:
-            for row in csv.DictReader(f):
-                county = row.get("county", "")
-                cat4 = float(row.get("cat4_ft") or 0)
-                if cat4 > 0 and county in COUNTY_CENTROIDS:
-                    clat, clon = COUNTY_CENTROIDS[county]
-                    sg_lats.append(clat)
-                    sg_lons.append(clon)
-                    sg_vals.append(cat4 / MAX_SURGE_FT)
-    if sg_lats:
-        surge = norm01(idw_chunked(glat, glon, sg_lats, sg_lons, sg_vals, power=2))
-    else:
-        surge = np.zeros(len(glat), np.float32)
-    print(f"  {surge.min():.3f}–{surge.max():.3f} ({time.time()-t0:.1f}s)")
+    # Build centroid arrays used for all IDW layers
+    counties = [c for c in COUNTY_CENTROIDS if c in nri_scores]
+    c_lats = np.array([COUNTY_CENTROIDS[c][0] for c in counties], dtype=np.float32)
+    c_lons = np.array([COUNTY_CENTROIDS[c][1] for c in counties], dtype=np.float32)
+
+    # ── Compute per-layer IDW ──────────────────────────────────────────────────
+    layer_arrays = {}
+    for layer in GRID_LAYERS:
+        t1 = time.time()
+        if layer == "surge":
+            vals = np.array([float(surge_scores.get(c, 0)) for c in counties], dtype=np.float32)
+            # Only use counties with actual surge exposure as IDW source points
+            mask = vals > 0
+            if mask.sum() > 0:
+                arr = idw_chunked(glat, glon, c_lats[mask], c_lons[mask], vals[mask], power=2)
+            else:
+                arr = np.zeros(len(glat), dtype=np.float32)
+        else:
+            vals = np.array([float(nri_scores[c].get(layer, 0) or 0) for c in counties], dtype=np.float32)
+            arr = idw_chunked(glat, glon, c_lats, c_lons, vals, power=2)
+        layer_arrays[layer] = arr
+        print(f"  [{layer}] {arr.min():.1f}–{arr.max():.1f}  ({time.time()-t1:.1f}s)")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     n = len(glat)
     print(f"\nSaving {n:,} grid points → {OUTPUT}")
+    col_order = ["lat", "lon"] + GRID_LAYERS
     with open(OUTPUT, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["lat", "lon", "overall", "hurricane", "tornado", "sinkhole", "sealevel", "wildfire", "surge"])
+        w.writerow(col_order)
         for i in range(n):
-            w.writerow([
-                round(float(glat[i]), 4),
-                round(float(glon[i]), 4),
-                round(float(overall[i]), 4),
-                round(float(hurricane[i]), 4),
-                round(float(tornado[i]), 4),
-                round(float(sinkhole[i]), 4),
-                round(float(sealevel[i]), 4),
-                round(float(wildfire[i]), 4),
-                round(float(surge[i]), 4),
-            ])
+            row = [round(float(glat[i]), 4), round(float(glon[i]), 4)]
+            row += [round(float(layer_arrays[col][i]), 3) for col in GRID_LAYERS]
+            w.writerow(row)
 
     print(f"Done in {time.time()-t0:.1f}s")
 

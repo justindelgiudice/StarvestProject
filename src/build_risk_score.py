@@ -1,15 +1,16 @@
 """
-Combine hurricane, storm surge, flood zone, sea level rise, tornado, sinkhole,
-and wildfire data into a composite risk score (0-10) per Florida county.
+Build Florida county risk scores from FEMA National Risk Index (NRI) data.
 
-Weights:  Hurricane 25% · Storm Surge 20% · Flood 20% · Sea Level 15%
-          Tornado 10% · Sinkhole 5% · Wildfire 5%
+Replaces all custom hazard calculations with official federal risk indices.
+Source: FEMA NRI via ArcGIS Feature Service
+        https://www.fema.gov/emergency-managers/practitioners/resilience-analysis-and-planning-tool
+
+Scores are NRI percentile scores (0-100). Higher = more risk nationally.
 
 Saves to data/processed/county_risk_scores.csv.
 """
 
 import csv
-import math
 import os
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
@@ -17,297 +18,142 @@ RAW  = os.path.join(ROOT, "data", "raw")
 PROC = os.path.join(ROOT, "data", "processed")
 
 PATHS = {
-    "hurricanes":   os.path.join(RAW, "hurricanes.csv"),
-    "flood":        os.path.join(RAW, "flood_zones.csv"),
-    "sealevel":     os.path.join(RAW, "sealevel.csv"),
-    "tornadoes":    os.path.join(RAW, "tornadoes.csv"),
-    "sinkholes":    os.path.join(RAW, "sinkholes.csv"),
-    "wildfires":    os.path.join(RAW, "wildfires.csv"),
-    "storm_surge":  os.path.join(RAW, "storm_surge.csv"),
-    "output":       os.path.join(PROC, "county_risk_scores.csv"),
+    "nri":    os.path.join(RAW,  "fema_nri_counties.csv"),
+    "surge":  os.path.join(RAW,  "storm_surge.csv"),
+    "output": os.path.join(PROC, "county_risk_scores.csv"),
 }
 
-FLORIDA_COUNTIES = [
-    "Alachua", "Baker", "Bay", "Bradford", "Brevard", "Broward", "Calhoun",
-    "Charlotte", "Citrus", "Clay", "Collier", "Columbia", "DeSoto", "Dixie",
-    "Duval", "Escambia", "Flagler", "Franklin", "Gadsden", "Gilchrist",
-    "Glades", "Gulf", "Hamilton", "Hardee", "Hendry", "Hernando", "Highlands",
-    "Hillsborough", "Holmes", "Indian River", "Jackson", "Jefferson", "Lafayette",
-    "Lake", "Lee", "Leon", "Levy", "Liberty", "Madison", "Manatee", "Marion",
-    "Martin", "Miami-Dade", "Monroe", "Nassau", "Okaloosa", "Okeechobee",
-    "Orange", "Osceola", "Palm Beach", "Pasco", "Pinellas", "Polk", "Putnam",
-    "St. Johns", "St. Lucie", "Santa Rosa", "Sarasota", "Seminole", "Sumter",
-    "Suwannee", "Taylor", "Union", "Volusia", "Wakulla", "Walton", "Washington",
+# STCOFIPS → standard county name (matches COUNTY_CENTROIDS keys)
+FIPS_TO_COUNTY = {
+    "12001": "Alachua",     "12003": "Baker",       "12005": "Bay",
+    "12007": "Bradford",    "12009": "Brevard",     "12011": "Broward",
+    "12013": "Calhoun",     "12015": "Charlotte",   "12017": "Citrus",
+    "12019": "Clay",        "12021": "Collier",     "12023": "Columbia",
+    "12027": "DeSoto",      "12029": "Dixie",       "12031": "Duval",
+    "12033": "Escambia",    "12035": "Flagler",     "12037": "Franklin",
+    "12039": "Gadsden",     "12041": "Gilchrist",   "12043": "Glades",
+    "12045": "Gulf",        "12047": "Hamilton",    "12049": "Hardee",
+    "12051": "Hendry",      "12053": "Hernando",    "12055": "Highlands",
+    "12057": "Hillsborough","12059": "Holmes",      "12061": "Indian River",
+    "12063": "Jackson",     "12065": "Jefferson",   "12067": "Lafayette",
+    "12069": "Lake",        "12071": "Lee",         "12073": "Leon",
+    "12075": "Levy",        "12077": "Liberty",     "12079": "Madison",
+    "12081": "Manatee",     "12083": "Marion",      "12085": "Martin",
+    "12086": "Miami-Dade",  "12087": "Monroe",      "12089": "Nassau",
+    "12091": "Okaloosa",    "12093": "Okeechobee",  "12095": "Orange",
+    "12097": "Osceola",     "12099": "Palm Beach",  "12101": "Pasco",
+    "12103": "Pinellas",    "12105": "Polk",        "12107": "Putnam",
+    "12109": "St. Johns",   "12111": "St. Lucie",   "12113": "Santa Rosa",
+    "12115": "Sarasota",    "12117": "Seminole",    "12119": "Sumter",
+    "12121": "Suwannee",    "12123": "Taylor",      "12125": "Union",
+    "12127": "Volusia",     "12129": "Wakulla",     "12131": "Walton",
+    "12133": "Washington",
+}
+
+# NRI field → our output column name
+NRI_FIELD_MAP = {
+    "RISK_SCORE":  "risk_score",
+    "RISK_RATNG":  "risk_rating",
+    "EAL_SCORE":   "eal_score",
+    "EAL_RATNG":   "eal_rating",
+    "EAL_VALT":    "eal_annual_loss_usd",
+    # Per-hazard Expected Annual Loss scores (pure physical exposure, no social adjustment)
+    "HRCN_EALS":   "hurricane_score",
+    "CFLD_EALS":   "coastal_flood_score",
+    "IFLD_EALS":   "inland_flood_score",
+    "TRND_EALS":   "tornado_score",
+    "WFIR_EALS":   "wildfire_score",
+    "SWND_EALS":   "wind_score",
+    # Social context
+    "SOVI_SCORE":  "sovi_score",
+    "SOVI_RATNG":  "sovi_rating",
+    "RESL_SCORE":  "resl_score",
+    "RESL_RATNG":  "resl_rating",
+}
+
+FIELDNAMES = [
+    "county", "stcofips",
+    "risk_score", "risk_rating",
+    "eal_score", "eal_rating", "eal_annual_loss_usd",
+    "hurricane_score", "coastal_flood_score", "inland_flood_score",
+    "tornado_score", "wildfire_score", "wind_score",
+    "surge_cat4_ft", "surge_cat5_ft",
+    "sovi_score", "sovi_rating", "resl_score", "resl_rating",
 ]
 
-COUNTY_CENTROIDS = {
-    "Alachua": (29.67, -82.33), "Baker": (30.33, -82.30), "Bay": (30.22, -85.65),
-    "Bradford": (29.94, -82.17), "Brevard": (28.26, -80.72), "Broward": (26.07, -80.25),
-    "Calhoun": (30.41, -85.20), "Charlotte": (26.95, -82.03), "Citrus": (28.84, -82.50),
-    "Clay": (30.00, -81.87), "Collier": (25.90, -81.30), "Columbia": (30.23, -82.62),
-    "DeSoto": (27.18, -81.80), "Dixie": (29.58, -83.17), "Duval": (30.37, -81.65),
-    "Escambia": (30.61, -87.34), "Flagler": (29.47, -81.27), "Franklin": (29.84, -84.83),
-    "Gadsden": (30.58, -84.62), "Gilchrist": (29.72, -82.79), "Glades": (26.96, -81.19),
-    "Gulf": (29.92, -85.18), "Hamilton": (30.49, -82.98), "Hardee": (27.49, -81.79),
-    "Hendry": (26.50, -81.31), "Hernando": (28.56, -82.46), "Highlands": (27.34, -81.34),
-    "Hillsborough": (27.90, -82.35), "Holmes": (30.87, -85.81), "Indian River": (27.70, -80.57),
-    "Jackson": (30.72, -85.20), "Jefferson": (30.42, -83.90), "Lafayette": (29.98, -83.20),
-    "Lake": (28.77, -81.71), "Lee": (26.54, -81.76), "Leon": (30.46, -84.29),
-    "Levy": (29.28, -82.78), "Liberty": (30.24, -84.88), "Madison": (30.47, -83.47),
-    "Manatee": (27.47, -82.35), "Marion": (29.21, -82.06), "Martin": (27.07, -80.41),
-    "Miami-Dade": (25.55, -80.63), "Monroe": (24.56, -81.36), "Nassau": (30.61, -81.77),
-    "Okaloosa": (30.65, -86.51), "Okeechobee": (27.39, -80.90), "Orange": (28.49, -81.26),
-    "Osceola": (27.84, -81.11), "Palm Beach": (26.65, -80.30), "Pasco": (28.30, -82.44),
-    "Pinellas": (27.88, -82.73), "Polk": (27.94, -81.68), "Putnam": (29.62, -81.74),
-    "St. Johns": (29.95, -81.44), "St. Lucie": (27.38, -80.43), "Santa Rosa": (30.68, -86.98),
-    "Sarasota": (27.19, -82.37), "Seminole": (28.71, -81.22), "Sumter": (28.71, -82.08),
-    "Suwannee": (30.19, -83.00), "Taylor": (30.06, -83.61), "Union": (30.04, -82.37),
-    "Volusia": (29.03, -81.18), "Wakulla": (30.10, -84.37), "Walton": (30.58, -86.13),
-    "Washington": (30.60, -85.67),
-}
 
-WEIGHTS = {
-    "hurricane": 0.25,
-    "surge":     0.20,
-    "flood":     0.20,
-    "sealevel":  0.15,
-    "tornado":   0.10,
-    "sinkhole":  0.05,
-    "wildfire":  0.05,
-}
-
-COUNTY_RADIUS_MILES = 75.0
-MAX_STORM_COUNT  = 60.0
-MAX_MAX_WIND     = 175.0
-MAX_SFHA_PCT     = 60.0
-MAX_SLR_2100     = 0.85
-MAX_TORNADO_CNT  = 200.0    # FL county tornado count, historical high ≈ 180
-MAX_SINKHOLE_CNT = 1200.0   # Hillsborough ≈ 1,180; ceiling gives 0–10 headroom
-MAX_FIRE_SCORE   = 200.0    # count × avg_frp normalization ceiling
-MAX_SURGE_FT     = 20.0     # Gulf County Cat 5 ≈ 20 ft; absolute ceiling
+def _float(val, default=0.0) -> float:
+    try:
+        return float(val) if val not in (None, "", "None", "null") else default
+    except (TypeError, ValueError):
+        return default
 
 
-def haversine(lat1, lon1, lat2, lon2) -> float:
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dl = math.radians(lon2 - lon1)
-    dphi = math.radians(lat2 - lat1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
-    return 3958.8 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def norm(value: float, max_val: float) -> float:
-    return min(10.0, round(10.0 * value / max_val, 3)) if max_val > 0 else 0.0
-
-
-# ── Loaders ────────────────────────────────────────────────────────────────────
-
-def load_hurricane_stats() -> dict:
-    county_storms: dict[str, set] = {c: set() for c in FLORIDA_COUNTIES}
-    county_wind: dict[str, float]  = {c: 0.0   for c in FLORIDA_COUNTIES}
-    with open(PATHS["hurricanes"], newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            try:
-                rlat = float(row["latitude"])
-                rlon = float(row["longitude"])
-                wind = float(row["wind_knots"] or 0)
-            except (ValueError, KeyError):
-                continue
-            for county, (clat, clon) in COUNTY_CENTROIDS.items():
-                if haversine(clat, clon, rlat, rlon) <= COUNTY_RADIUS_MILES:
-                    county_storms[county].add(row["storm_id"])
-                    county_wind[county] = max(county_wind[county], wind)
-    return {c: {"storm_count": len(s), "max_wind_knots": county_wind[c]}
-            for c, s in county_storms.items()}
-
-
-def load_flood_stats() -> dict:
+def load_nri_data() -> dict:
     result = {}
-    with open(PATHS["flood"], newline="", encoding="utf-8") as f:
+    with open(PATHS["nri"], newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            pct = row.get("sfha_pct")
-            result[row["county"]] = float(pct) if pct not in (None, "", "None") else 0.0
+            fips = row.get("STCOFIPS", "").strip()
+            county = FIPS_TO_COUNTY.get(fips)
+            if not county:
+                continue
+            mapped = {"county": county, "stcofips": fips}
+            for nri_col, our_col in NRI_FIELD_MAP.items():
+                mapped[our_col] = _float(row.get(nri_col), 0.0)
+                if our_col.endswith("_rating"):
+                    mapped[our_col] = row.get(nri_col, "") or ""
+            result[county] = mapped
     return result
 
 
-def load_sealevel_stats() -> dict:
+def load_surge_data() -> dict:
+    """Return {county: {cat4_ft, cat5_ft}}."""
     result = {}
-    with open(PATHS["sealevel"], newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            slr = row.get("projected_slr_2100_m")
-            result[row["county"]] = float(slr) if slr not in (None, "", "None") else 0.0
-    return result
-
-
-def load_tornado_stats() -> dict:
-    """Count tornado touchdowns within 75 miles of each county centroid."""
-    counts: dict[str, int] = {c: 0 for c in FLORIDA_COUNTIES}
-    if not os.path.exists(PATHS["tornadoes"]):
-        return counts
-    with open(PATHS["tornadoes"], newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            try:
-                tlat = float(row["latitude"])
-                tlon = float(row["longitude"])
-            except (ValueError, KeyError):
-                continue
-            for county, (clat, clon) in COUNTY_CENTROIDS.items():
-                if haversine(clat, clon, tlat, tlon) <= COUNTY_RADIUS_MILES:
-                    counts[county] += 1
-    return counts
-
-
-def load_sinkhole_stats() -> dict:
-    """Count sinkholes per county using the county name column."""
-    counts: dict[str, int] = {c: 0 for c in FLORIDA_COUNTIES}
-    if not os.path.exists(PATHS["sinkholes"]):
-        return counts
-    with open(PATHS["sinkholes"], newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            county = row.get("county", "").strip()
-            if county in counts:
-                counts[county] += 1
-    return counts
-
-
-def load_storm_surge_stats() -> dict:
-    """Return {county: {cat1_ft, cat2_ft, cat3_ft, cat4_ft, cat5_ft}} from storm_surge.csv."""
-    zero = {"cat1_ft": 0, "cat2_ft": 0, "cat3_ft": 0, "cat4_ft": 0, "cat5_ft": 0}
-    result = {c: dict(zero) for c in FLORIDA_COUNTIES}
-    if not os.path.exists(PATHS["storm_surge"]):
+    if not os.path.exists(PATHS["surge"]):
         return result
-    with open(PATHS["storm_surge"], newline="", encoding="utf-8") as f:
+    with open(PATHS["surge"], newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             county = row.get("county", "").strip()
-            if county in result:
-                result[county] = {
-                    "cat1_ft": int(row.get("cat1_ft") or 0),
-                    "cat2_ft": int(row.get("cat2_ft") or 0),
-                    "cat3_ft": int(row.get("cat3_ft") or 0),
-                    "cat4_ft": int(row.get("cat4_ft") or 0),
-                    "cat5_ft": int(row.get("cat5_ft") or 0),
-                }
+            result[county] = {
+                "cat4_ft": int(row.get("cat4_ft") or 0),
+                "cat5_ft": int(row.get("cat5_ft") or 0),
+            }
     return result
 
-
-def load_wildfire_stats() -> dict:
-    """
-    Compute per-county wildfire intensity score = count × avg_FRP
-    using detections within 75 miles of each county centroid.
-    """
-    counts: dict[str, int]   = {c: 0   for c in FLORIDA_COUNTIES}
-    frp_sum: dict[str, float] = {c: 0.0 for c in FLORIDA_COUNTIES}
-    if not os.path.exists(PATHS["wildfires"]):
-        return {c: {"fire_count": 0, "avg_frp": 0.0} for c in FLORIDA_COUNTIES}
-    with open(PATHS["wildfires"], newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            try:
-                flat = float(row["latitude"])
-                flon = float(row["longitude"])
-                frp  = float(row["frp"])
-            except (ValueError, KeyError):
-                continue
-            for county, (clat, clon) in COUNTY_CENTROIDS.items():
-                if haversine(clat, clon, flat, flon) <= COUNTY_RADIUS_MILES:
-                    counts[county] += 1
-                    frp_sum[county] += frp
-    return {
-        c: {
-            "fire_count": counts[c],
-            "avg_frp": round(frp_sum[c] / counts[c], 2) if counts[c] > 0 else 0.0,
-        }
-        for c in FLORIDA_COUNTIES
-    }
-
-
-# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("Building composite risk scores (7-factor model)...")
-    h_stats = load_hurricane_stats()
-    sg_stats = load_storm_surge_stats()
-    f_stats = load_flood_stats()
-    s_stats = load_sealevel_stats()
-    t_stats = load_tornado_stats()
-    k_stats = load_sinkhole_stats()
-    w_stats = load_wildfire_stats()
+    print("Building county risk scores from FEMA NRI data...")
+    nri = load_nri_data()
+    surge = load_surge_data()
+    print(f"  NRI data loaded: {len(nri)} counties")
 
     os.makedirs(PROC, exist_ok=True)
     rows = []
 
-    for county in FLORIDA_COUNTIES:
-        h = h_stats.get(county, {"storm_count": 0, "max_wind_knots": 0})
-        storm_score = norm(h["storm_count"],    MAX_STORM_COUNT)
-        wind_score  = norm(h["max_wind_knots"], MAX_MAX_WIND)
-        hurricane_score = round(0.6 * storm_score + 0.4 * wind_score, 3)
+    for county, d in nri.items():
+        sg = surge.get(county, {"cat4_ft": 0, "cat5_ft": 0})
+        row = dict(d)
+        row["surge_cat4_ft"] = sg["cat4_ft"]
+        row["surge_cat5_ft"] = sg["cat5_ft"]
+        # Ensure string rating columns are preserved
+        for col in FIELDNAMES:
+            if col not in row:
+                row[col] = ""
+        rows.append(row)
 
-        sg = sg_stats.get(county, {"cat1_ft": 0, "cat2_ft": 0, "cat3_ft": 0,
-                                    "cat4_ft": 0, "cat5_ft": 0})
-        surge_score = norm(sg["cat4_ft"], MAX_SURGE_FT)
+    rows.sort(key=lambda r: float(r.get("eal_score", 0) or 0), reverse=True)
 
-        flood_score    = norm(f_stats.get(county, 0.0), MAX_SFHA_PCT)
-        sealevel_score = norm(s_stats.get(county, 0.0), MAX_SLR_2100)
-        tornado_score   = norm(t_stats.get(county, 0),   MAX_TORNADO_CNT)
-        sinkhole_count  = k_stats.get(county, 0)
-        sinkhole_score  = norm(sinkhole_count, MAX_SINKHOLE_CNT)
-
-        wf = w_stats.get(county, {"fire_count": 0, "avg_frp": 0.0})
-        fire_intensity  = wf["fire_count"] * wf["avg_frp"] / 1000.0
-        wildfire_score  = norm(fire_intensity, MAX_FIRE_SCORE / 1000.0)
-
-        composite = round(
-            WEIGHTS["hurricane"] * hurricane_score
-            + WEIGHTS["surge"]    * surge_score
-            + WEIGHTS["flood"]    * flood_score
-            + WEIGHTS["sealevel"] * sealevel_score
-            + WEIGHTS["tornado"]  * tornado_score
-            + WEIGHTS["sinkhole"] * sinkhole_score
-            + WEIGHTS["wildfire"] * wildfire_score,
-            3,
-        )
-
-        rows.append({
-            "county":               county,
-            "storm_count":          h["storm_count"],
-            "max_wind_knots":       h["max_wind_knots"],
-            "hurricane_score":      hurricane_score,
-            "surge_cat4_ft":        sg["cat4_ft"],
-            "surge_cat5_ft":        sg["cat5_ft"],
-            "surge_score":          surge_score,
-            "sfha_pct":             f_stats.get(county, 0.0),
-            "flood_score":          flood_score,
-            "slr_2100_m":           s_stats.get(county, 0.0),
-            "sealevel_score":       sealevel_score,
-            "tornado_count":        t_stats.get(county, 0),
-            "tornado_score":        tornado_score,
-            "sinkhole_count":       sinkhole_count,
-            "sinkhole_score":       sinkhole_score,
-            "fire_count":           wf["fire_count"],
-            "avg_frp":              wf["avg_frp"],
-            "wildfire_score":       wildfire_score,
-            "composite_risk_score": composite,
-        })
-
-    rows.sort(key=lambda r: r["composite_risk_score"], reverse=True)
-
-    fieldnames = [
-        "county", "storm_count", "max_wind_knots", "hurricane_score",
-        "surge_cat4_ft", "surge_cat5_ft", "surge_score",
-        "sfha_pct", "flood_score", "slr_2100_m", "sealevel_score",
-        "tornado_count", "tornado_score",
-        "sinkhole_count", "sinkhole_score",
-        "fire_count", "avg_frp", "wildfire_score",
-        "composite_risk_score",
-    ]
     with open(PATHS["output"], "w", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=fieldnames).writeheader()
-        csv.DictWriter(f, fieldnames=fieldnames).writerows(rows)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
     print(f"Saved {len(rows)} counties → {PATHS['output']}")
-    print("\nTop 10 highest-risk counties:")
-    for r in rows[:10]:
-        print(f"  {r['county']:20s}  composite={r['composite_risk_score']:.2f}  "
-              f"hurricane={r['hurricane_score']:.2f}  surge={r['surge_score']:.2f}  "
-              f"flood={r['flood_score']:.2f}  Cat4={r['surge_cat4_ft']}ft")
+    print("\nTop 15 by EAL Score (FEMA NRI):")
+    for r in rows[:15]:
+        print(f"  {r['county']:20s}  EAL={float(r['eal_score']):.1f}  RISK={float(r['risk_score']):.1f}  "
+              f"HRCN={float(r['hurricane_score']):.1f}  CFLD={float(r['coastal_flood_score']):.1f}  "
+              f"rating={r['eal_rating']}")
 
 
 if __name__ == "__main__":
