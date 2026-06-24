@@ -1,8 +1,9 @@
 """
-Combine hurricane, flood zone, sea level rise, tornado, and wildfire data
-into a composite risk score (0-10) per Florida county.
+Combine hurricane, flood zone, sea level rise, tornado, sinkhole, and wildfire
+data into a composite risk score (0-10) per Florida county.
 
-Weights:  Hurricane 35% · Flood 30% · Sea Level 20% · Tornado 10% · Wildfire 5%
+Weights:  Hurricane 30% · Flood 25% · Sea Level 20% · Tornado 10%
+          Sinkhole 10% · Wildfire 5%
 
 Saves to data/processed/county_risk_scores.csv.
 """
@@ -20,6 +21,7 @@ PATHS = {
     "flood":      os.path.join(RAW, "flood_zones.csv"),
     "sealevel":   os.path.join(RAW, "sealevel.csv"),
     "tornadoes":  os.path.join(RAW, "tornadoes.csv"),
+    "sinkholes":  os.path.join(RAW, "sinkholes.csv"),
     "wildfires":  os.path.join(RAW, "wildfires.csv"),
     "output":     os.path.join(PROC, "county_risk_scores.csv"),
 }
@@ -64,10 +66,11 @@ COUNTY_CENTROIDS = {
 }
 
 WEIGHTS = {
-    "hurricane": 0.35,
-    "flood":     0.30,
+    "hurricane": 0.30,
+    "flood":     0.25,
     "sealevel":  0.20,
     "tornado":   0.10,
+    "sinkhole":  0.10,
     "wildfire":  0.05,
 }
 
@@ -77,6 +80,7 @@ MAX_MAX_WIND     = 175.0
 MAX_SFHA_PCT     = 60.0
 MAX_SLR_2100     = 0.85
 MAX_TORNADO_CNT  = 200.0    # FL county tornado count, historical high ≈ 180
+MAX_SINKHOLE_CNT = 1200.0   # Hillsborough ≈ 1,180; ceiling gives 0–10 headroom
 MAX_FIRE_SCORE   = 200.0    # count × avg_frp normalization ceiling
 
 
@@ -149,6 +153,19 @@ def load_tornado_stats() -> dict:
     return counts
 
 
+def load_sinkhole_stats() -> dict:
+    """Count sinkholes per county using the county name column."""
+    counts: dict[str, int] = {c: 0 for c in FLORIDA_COUNTIES}
+    if not os.path.exists(PATHS["sinkholes"]):
+        return counts
+    with open(PATHS["sinkholes"], newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            county = row.get("county", "").strip()
+            if county in counts:
+                counts[county] += 1
+    return counts
+
+
 def load_wildfire_stats() -> dict:
     """
     Compute per-county wildfire intensity score = count × avg_FRP
@@ -182,11 +199,12 @@ def load_wildfire_stats() -> dict:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("Building composite risk scores (5-factor model)...")
+    print("Building composite risk scores (6-factor model)...")
     h_stats = load_hurricane_stats()
     f_stats = load_flood_stats()
     s_stats = load_sealevel_stats()
     t_stats = load_tornado_stats()
+    k_stats = load_sinkhole_stats()
     w_stats = load_wildfire_stats()
 
     os.makedirs(PROC, exist_ok=True)
@@ -200,10 +218,12 @@ def main():
 
         flood_score    = norm(f_stats.get(county, 0.0), MAX_SFHA_PCT)
         sealevel_score = norm(s_stats.get(county, 0.0), MAX_SLR_2100)
-        tornado_score  = norm(t_stats.get(county, 0),   MAX_TORNADO_CNT)
+        tornado_score   = norm(t_stats.get(county, 0),   MAX_TORNADO_CNT)
+        sinkhole_count  = k_stats.get(county, 0)
+        sinkhole_score  = norm(sinkhole_count, MAX_SINKHOLE_CNT)
 
         wf = w_stats.get(county, {"fire_count": 0, "avg_frp": 0.0})
-        fire_intensity  = wf["fire_count"] * wf["avg_frp"] / 1000.0  # scale: count×MW/1000
+        fire_intensity  = wf["fire_count"] * wf["avg_frp"] / 1000.0
         wildfire_score  = norm(fire_intensity, MAX_FIRE_SCORE / 1000.0)
 
         composite = round(
@@ -211,24 +231,27 @@ def main():
             + WEIGHTS["flood"]    * flood_score
             + WEIGHTS["sealevel"] * sealevel_score
             + WEIGHTS["tornado"]  * tornado_score
+            + WEIGHTS["sinkhole"] * sinkhole_score
             + WEIGHTS["wildfire"] * wildfire_score,
             3,
         )
 
         rows.append({
-            "county":           county,
-            "storm_count":      h["storm_count"],
-            "max_wind_knots":   h["max_wind_knots"],
-            "hurricane_score":  hurricane_score,
-            "sfha_pct":         f_stats.get(county, 0.0),
-            "flood_score":      flood_score,
-            "slr_2100_m":       s_stats.get(county, 0.0),
-            "sealevel_score":   sealevel_score,
-            "tornado_count":    t_stats.get(county, 0),
-            "tornado_score":    tornado_score,
-            "fire_count":       wf["fire_count"],
-            "avg_frp":          wf["avg_frp"],
-            "wildfire_score":   wildfire_score,
+            "county":               county,
+            "storm_count":          h["storm_count"],
+            "max_wind_knots":       h["max_wind_knots"],
+            "hurricane_score":      hurricane_score,
+            "sfha_pct":             f_stats.get(county, 0.0),
+            "flood_score":          flood_score,
+            "slr_2100_m":           s_stats.get(county, 0.0),
+            "sealevel_score":       sealevel_score,
+            "tornado_count":        t_stats.get(county, 0),
+            "tornado_score":        tornado_score,
+            "sinkhole_count":       sinkhole_count,
+            "sinkhole_score":       sinkhole_score,
+            "fire_count":           wf["fire_count"],
+            "avg_frp":              wf["avg_frp"],
+            "wildfire_score":       wildfire_score,
             "composite_risk_score": composite,
         })
 
@@ -237,7 +260,9 @@ def main():
     fieldnames = [
         "county", "storm_count", "max_wind_knots", "hurricane_score",
         "sfha_pct", "flood_score", "slr_2100_m", "sealevel_score",
-        "tornado_count", "tornado_score", "fire_count", "avg_frp", "wildfire_score",
+        "tornado_count", "tornado_score",
+        "sinkhole_count", "sinkhole_score",
+        "fire_count", "avg_frp", "wildfire_score",
         "composite_risk_score",
     ]
     with open(PATHS["output"], "w", newline="", encoding="utf-8") as f:
@@ -249,7 +274,7 @@ def main():
     for r in rows[:10]:
         print(f"  {r['county']:20s}  composite={r['composite_risk_score']:.2f}  "
               f"storms={r['storm_count']}  flood={r['sfha_pct']:.0f}%  "
-              f"tornado={r['tornado_count']}  fires={r['fire_count']}")
+              f"tornado={r['tornado_count']}  sinkholes={r['sinkhole_count']}  fires={r['fire_count']}")
 
 
 if __name__ == "__main__":

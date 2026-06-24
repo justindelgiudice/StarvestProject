@@ -210,6 +210,7 @@ def enrich_geojson(
         sfha = flood_by_county.get(county, float(d.get("sfha_pct", 0) or 0))
         slr = float(d.get("slr_2100_m", 0) or 0)
         torns = tornado_counts.get(county, 0)
+        sinkholes = int(d.get("sinkhole_count", 0))
         fires = int(d.get("fire_count", 0))
 
         enriched.append({
@@ -222,6 +223,7 @@ def enrich_geojson(
                 "Sea Level 2100":    f"{slr:.2f}m",
                 "Storms (1950+)":    int(d.get("storm_count", 0)),
                 "Tornadoes":         torns,
+                "Sinkholes":         sinkholes,
                 "Wildfire Events":   fires,
                 "_sfha_pct":         sfha,
                 "_score":            score,
@@ -265,11 +267,13 @@ def make_county_layer(rich_geojson: dict, layer: str) -> folium.GeoJson:
     popup = folium.GeoJsonPopup(
         fields=[
             "County", "Composite Risk", "Hurricane Score",
-            "Flood Zone (SFHA)", "Sea Level 2100", "Storms (1950+)", "Tornadoes", "Wildfire Events",
+            "Flood Zone (SFHA)", "Sea Level 2100", "Storms (1950+)",
+            "Tornadoes", "Sinkholes", "Wildfire Events",
         ],
         aliases=[
             "County:", "Composite Risk:", "Hurricane Score:",
-            "Flood Zone (SFHA):", "Sea Level Rise 2100:", "Storms (1950+):", "Tornadoes:", "Wildfire Events:",
+            "Flood Zone (SFHA):", "Sea Level Rise 2100:", "Storms (1950+):",
+            "Tornadoes:", "Sinkholes:", "Wildfire Events:",
         ],
         style=(
             "font-family:sans-serif;font-size:13px;"
@@ -418,14 +422,16 @@ st_folium(risk_map, width=None, height=620, returned_objects=[])
 # ── Data table ─────────────────────────────────────────────────────────────────
 with st.expander("County Risk Score Table"):
     display_cols = {
-        "county": "County",
+        "county":               "County",
         "composite_risk_score": "Composite (0–10)",
-        "hurricane_score": "Hurricane",
-        "flood_score": "Flood Zone",
-        "sealevel_score": "Sea Level",
-        "storm_count": "Storms",
-        "sfha_pct": "SFHA %",
-        "slr_2100_m": "SLR 2100 (m)",
+        "hurricane_score":      "Hurricane",
+        "flood_score":          "Flood Zone",
+        "sealevel_score":       "Sea Level",
+        "tornado_score":        "Tornado",
+        "sinkhole_score":       "Sinkhole",
+        "wildfire_score":       "Wildfire",
+        "storm_count":          "Storms",
+        "sfha_pct":             "SFHA %",
     }
     show = [c for c in display_cols if c in df_risk.columns]
     st.dataframe(
