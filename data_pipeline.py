@@ -65,7 +65,7 @@ def get_ndvi_time_series():
 
     for year in range(START_YEAR, END_YEAR + 1):
         collection = (
-            ee.ImageCollection("MODIS/006/MOD13Q1")
+            ee.ImageCollection("MODIS/061/MOD13Q1")
             .filterDate(f"{year}-01-01", f"{year}-03-31")
             .filterBounds(citrus_belt)
             .select("NDVI")
