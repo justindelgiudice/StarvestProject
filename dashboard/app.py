@@ -196,13 +196,16 @@ def _surge_pts() -> list:
 
 @st.cache_data(show_spinner=False)
 def _flood_pts() -> list:
-    df = pd.read_csv(PATHS["flood_zones"]).astype({"sfha_pct": float})
+    df = pd.read_csv(PATHS["flood_zones"])
+    df["sfha_pct"] = pd.to_numeric(df["sfha_pct"], errors="coerce")
+    df = df.dropna(subset=["sfha_pct"])          # 14 counties have no SFHA data
+    df = df[df["sfha_pct"] > 0]
     rng = np.random.default_rng(seed=7)
     pts: list = []
     for _, r in df.iterrows():
         county = r["county"]
         sfha = float(r["sfha_pct"])
-        if sfha <= 0 or county not in COUNTY_CENTROIDS:
+        if county not in COUNTY_CENTROIDS:
             continue
         clat, clon = COUNTY_CENTROIDS[county]
         n_pts = max(2, int(sfha / 2))  # ~1 pt per 2% SFHA coverage
