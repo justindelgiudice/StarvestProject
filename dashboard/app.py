@@ -652,9 +652,6 @@ with tab5:
         title={"text": f"NDVI Surprise · {latest_year}<br><span style='font-size:12px;color:#94A3B8'>"
                        f"Red zone = LONG signal &nbsp;|&nbsp; Green zone = SHORT signal</span>"},
     ))
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        height=300,
-        margin=dict(l=40, r=40, t=60, b=20),
-    )
+    fig.update_layout(**PLOTLY_LAYOUT, height=300)
+    fig.update_layout(margin=dict(l=40, r=40, t=60, b=20))
     st.plotly_chart(fig, use_container_width=True)
