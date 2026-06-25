@@ -4,7 +4,7 @@ Starvest Data Pipeline
 Pulls three datasets and merges them into a single CSV:
   1. MODIS NDVI (Jan-Mar average) via Google Earth Engine
   2. Florida orange production + bearing acreage via USDA NASS API
-  3. OJ futures April close price via yfinance
+  3. OJ futures April/September close price via yfinance
 
 Output: starvest_data.csv with one row per year (2005-2025)
 
@@ -13,11 +13,14 @@ Run from your project root:
 
 Requirements:
     pip install earthengine-api yfinance pandas requests python-dotenv
+
+GEE setup:
+    earthengine authenticate
+    Set GEE_PROJECT=your-project-id in .env
 """
 
 import os
 import time
-import json
 import requests
 import pandas as pd
 import yfinance as yf
@@ -28,24 +31,11 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-START_YEAR = 2005
-END_YEAR   = 2025
-
-# Florida citrus belt counties (FIPS codes for geometry lookup)
-# Polk, Highlands, Hardee, DeSoto, Indian River, St. Lucie, Hendry
-CITRUS_COUNTIES = [
-    "12105",  # Polk
-    "12055",  # Highlands
-    "12049",  # Hardee
-    "12027",  # DeSoto
-    "12061",  # Indian River
-    "12111",  # St. Lucie
-    "12051",  # Hendry
-]
-
+START_YEAR  = 2005
+END_YEAR    = 2025
+GEE_PROJECT = os.getenv("GEE_PROJECT")
 NASS_API_KEY = os.getenv("NASS_API_KEY")
 NASS_BASE    = "https://quickstats.nass.usda.gov/api/api_GET/"
-
 OUTPUT_FILE  = "starvest_data.csv"
 
 
@@ -53,36 +43,33 @@ OUTPUT_FILE  = "starvest_data.csv"
 
 def get_ndvi_time_series():
     """
-    Returns a dict {year: mean_ndvi} for Jan-Mar of each year 2005-2025.
-    Uses MODIS MOD13Q1 16-day composite at 250m over FL citrus belt counties.
+    Returns {year: mean_ndvi} for Jan-Mar of each year.
+    Uses MODIS MOD13Q1 16-day composite at 250m over FL citrus belt.
     """
     print("\n[1/3] Fetching MODIS NDVI from Google Earth Engine...")
 
+    if not GEE_PROJECT:
+        print("  SKIPPED: set GEE_PROJECT=<your-cloud-project> in .env")
+        return {}
+
     try:
-        ee.Initialize()
+        ee.Initialize(project=GEE_PROJECT)
     except Exception as e:
         print(f"  GEE auth error: {e}")
         print("  Run: earthengine authenticate")
         return {}
 
-    # Florida citrus belt bounding box
-    # Covers the main growing region in south-central Florida
+    # South-central Florida citrus belt
     citrus_belt = ee.Geometry.Rectangle([-82.5, 26.5, -80.0, 28.5])
-
     ndvi_by_year = {}
 
     for year in range(START_YEAR, END_YEAR + 1):
-        start = f"{year}-01-01"
-        end   = f"{year}-03-31"
-
         collection = (
             ee.ImageCollection("MODIS/006/MOD13Q1")
-            .filterDate(start, end)
+            .filterDate(f"{year}-01-01", f"{year}-03-31")
             .filterBounds(citrus_belt)
             .select("NDVI")
         )
-
-        # Mean NDVI over the region, scaled by 0.0001 (MODIS scale factor)
         mean_image = collection.mean()
         stats = mean_image.reduceRegion(
             reducer=ee.Reducer.mean(),
@@ -90,7 +77,6 @@ def get_ndvi_time_series():
             scale=250,
             maxPixels=1e9
         )
-
         try:
             ndvi_raw = stats.getInfo()["NDVI"]
             ndvi_scaled = ndvi_raw * 0.0001
@@ -99,18 +85,25 @@ def get_ndvi_time_series():
         except Exception as e:
             print(f"  {year}: ERROR - {e}")
             ndvi_by_year[year] = None
-
-        time.sleep(0.3)  # Be polite to GEE
+        time.sleep(0.3)
 
     return ndvi_by_year
 
 
 # ── 2. USDA NASS — Orange Production + Bearing Acreage ───────────────────────
 
+def _nass_get(params: dict) -> list:
+    params = {"key": NASS_API_KEY, "format": "JSON", **params}
+    r = requests.get(NASS_BASE, params=params, timeout=15)
+    r.raise_for_status()
+    return r.json().get("data", [])
+
+
 def get_nass_data():
     """
-    Returns a dict {year: {production_boxes, bearing_acres}} for 2005-2025.
-    Production in 1000 boxes, acreage in 1000 acres.
+    Returns {year: {production_boxes, bearing_acres}} for 2005-2025.
+    Production in boxes (e.g. 149_800_000), acreage in acres (e.g. 541_800).
+    Only final-actual rows are used (reference_period_desc == "YEAR").
     """
     print("\n[2/3] Fetching USDA NASS data...")
 
@@ -120,61 +113,71 @@ def get_nass_data():
 
     results = {}
 
-    # ── Production (1000 boxes) ──
-    prod_params = {
-        "key": NASS_API_KEY,
-        "commodity_desc": "ORANGES",
-        "state_alpha": "FL",
-        "statisticcat_desc": "PRODUCTION",
-        "unit_desc": "1000 BOXES",
-        "freq_desc": "ANNUAL",
-        "year__GE": str(START_YEAR),
-        "year__LE": str(END_YEAR),
-        "format": "JSON"
-    }
-
+    # ── Production (boxes) ──
     try:
-        r = requests.get(NASS_BASE, params=prod_params, timeout=15)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-
-        for row in data:
+        rows = _nass_get({
+            "commodity_desc":        "ORANGES",
+            "state_alpha":           "FL",
+            "statisticcat_desc":     "PRODUCTION",
+            "unit_desc":             "BOXES",
+            "class_desc":            "ALL CLASSES",
+            "agg_level_desc":        "STATE",
+            "reference_period_desc": "YEAR",
+            "year__GE":              str(START_YEAR),
+            "year__LE":              str(END_YEAR),
+        })
+        # Multiple programs may have reference_period_desc="YEAR"; keep the max
+        # per year (the largest reported figure is the official state total).
+        prod_max: dict = {}
+        for row in rows:
+            if row.get("agg_level_desc", "").upper() != "STATE":
+                continue
             year = int(row["year"])
-            # Filter to total oranges (not by variety breakdown)
-            if row.get("class_desc", "").upper() in ("", "ALL CLASSES"):
-                val_str = row["Value"].replace(",", "").strip()
-                if val_str not in ("(D)", "(Z)", "(NA)", ""):
-                    results.setdefault(year, {})["production_1000_boxes"] = float(val_str)
-                    print(f"  Production {year}: {val_str} thousand boxes")
-
+            val_str = row["Value"].replace(",", "").strip()
+            if val_str not in ("(D)", "(Z)", "(NA)", ""):
+                val = float(val_str)
+                if val > prod_max.get(year, 0):
+                    prod_max[year] = val
+        for year, val in sorted(prod_max.items()):
+            results.setdefault(year, {})["production_boxes"] = val
+            print(f"  Production {year}: {val/1e6:.2f}M boxes")
     except Exception as e:
         print(f"  Production fetch error: {e}")
 
     # ── Bearing Acreage ──
-    acre_params = {
-        "key": NASS_API_KEY,
-        "commodity_desc": "ORANGES",
-        "state_alpha": "FL",
-        "statisticcat_desc": "AREA BEARING",
-        "unit_desc": "ACRES",
-        "freq_desc": "ANNUAL",
-        "year__GE": str(START_YEAR),
-        "year__LE": str(END_YEAR),
-        "format": "JSON"
-    }
-
     try:
-        r = requests.get(NASS_BASE, params=acre_params, timeout=15)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-
-        for row in data:
+        rows = _nass_get({
+            "commodity_desc":        "ORANGES",
+            "state_alpha":           "FL",
+            "statisticcat_desc":     "AREA BEARING",
+            "unit_desc":             "ACRES",
+            "class_desc":            "ALL CLASSES",
+            "agg_level_desc":        "STATE",
+            "reference_period_desc": "YEAR",
+            "year__GE":              str(START_YEAR),
+            "year__LE":              str(END_YEAR),
+        })
+        # Census years (2007/2012/2017/2022) return county rows despite the
+        # STATE filter. Prefer SURVEY source; fall back to CENSUS if needed.
+        acre_survey: dict = {}
+        acre_census: dict = {}
+        for row in rows:
+            if row.get("agg_level_desc", "").upper() != "STATE":
+                continue
             year = int(row["year"])
             val_str = row["Value"].replace(",", "").strip()
-            if val_str not in ("(D)", "(Z)", "(NA)", ""):
-                results.setdefault(year, {})["bearing_acres"] = float(val_str)
-                print(f"  Bearing acres {year}: {val_str}")
-
+            if val_str in ("(D)", "(Z)", "(NA)", ""):
+                continue
+            val = float(val_str)
+            if row.get("source_desc", "").upper() == "SURVEY":
+                acre_survey[year] = val
+            else:
+                acre_census[year] = val
+        # Merge: survey wins over census
+        acre_final = {**acre_census, **acre_survey}
+        for year, val in sorted(acre_final.items()):
+            results.setdefault(year, {})["bearing_acres"] = val
+            print(f"  Bearing acres {year}: {val:,.0f}")
     except Exception as e:
         print(f"  Acreage fetch error: {e}")
 
@@ -185,10 +188,8 @@ def get_nass_data():
 
 def get_oj_prices():
     """
-    Returns a dict {year: {apr_close, sep_close, direction}}
-    apr_close = April average close (signal entry point)
-    sep_close = September average close (signal exit / measurement)
-    direction = 1 if price went UP Apr->Sep, -1 if DOWN
+    Returns {year: {apr_close, sep_close, price_direction}}
+    Uses daily data aggregated to monthly means for better coverage.
     """
     print("\n[3/3] Fetching OJ futures from yfinance...")
 
@@ -196,32 +197,33 @@ def get_oj_prices():
         oj = yf.Ticker("OJ=F")
         hist = oj.history(
             start=f"{START_YEAR}-01-01",
-            end=f"{END_YEAR}-10-01",
-            interval="1mo"
+            end=f"{END_YEAR}-10-15",
+            interval="1d"
         )
 
         if hist.empty:
             print("  ERROR: No data returned from yfinance")
             return {}
 
-        # Remove timezone info for clean indexing
         hist.index = hist.index.tz_localize(None) if hist.index.tz else hist.index
+
+        # Resample to monthly mean close
+        monthly = hist["Close"].resample("ME").mean()
 
         prices = {}
         for year in range(START_YEAR, END_YEAR + 1):
-            year_data = hist[hist.index.year == year]
-
-            apr = year_data[year_data.index.month == 4]["Close"]
-            sep = year_data[year_data.index.month == 9]["Close"]
+            year_monthly = monthly[monthly.index.year == year]
+            apr = year_monthly[year_monthly.index.month == 4]
+            sep = year_monthly[year_monthly.index.month == 9]
 
             if not apr.empty and not sep.empty:
-                apr_close = round(float(apr.values[0]), 2)
-                sep_close = round(float(sep.values[0]), 2)
+                apr_close = round(float(apr.iloc[0]), 2)
+                sep_close = round(float(sep.iloc[0]), 2)
                 direction = 1 if sep_close > apr_close else -1
                 prices[year] = {
-                    "apr_close": apr_close,
-                    "sep_close": sep_close,
-                    "price_direction": direction
+                    "apr_close":       apr_close,
+                    "sep_close":       sep_close,
+                    "price_direction": direction,
                 }
                 arrow = "↑" if direction == 1 else "↓"
                 print(f"  {year}: Apr={apr_close:.1f}¢  Sep={sep_close:.1f}¢  {arrow}")
@@ -237,29 +239,26 @@ def get_oj_prices():
 
 # ── 4. Merge & Compute Yield Surprise Signal ──────────────────────────────────
 
-def build_dataset(ndvi, nass, oj):
+def build_dataset(ndvi: dict, nass: dict, oj: dict) -> pd.DataFrame:
     """
     Merges all three sources and computes:
-      - ndvi_3yr_avg: rolling 3-year NDVI baseline
-      - ndvi_surprise: current NDVI minus 3yr avg (relative deviation)
-      - yield_surprise: actual production vs prior year (% change)
-      - ndvi_x_acres: composite signal (NDVI × bearing acres)
+      ndvi_3yr_avg   – rolling 3-year NDVI baseline (excludes current year)
+      ndvi_surprise  – current NDVI minus 3yr avg
+      yield_yoy_pct  – YoY % change in production
+      acres_norm     – bearing acres relative to 2005 baseline
+      ndvi_x_acres   – NDVI weighted by grove health proxy
     """
     print("\n[4/4] Merging datasets and computing signals...")
 
     rows = []
     for year in range(START_YEAR, END_YEAR + 1):
         row = {"year": year}
-
-        # NDVI
         row["ndvi_jan_mar"] = ndvi.get(year)
 
-        # NASS
         nass_year = nass.get(year, {})
-        row["production_1000_boxes"] = nass_year.get("production_1000_boxes")
-        row["bearing_acres"]         = nass_year.get("bearing_acres")
+        row["production_boxes"] = nass_year.get("production_boxes")
+        row["bearing_acres"]    = nass_year.get("bearing_acres")
 
-        # OJ prices
         oj_year = oj.get(year, {})
         row["apr_close"]       = oj_year.get("apr_close")
         row["sep_close"]       = oj_year.get("sep_close")
@@ -269,34 +268,24 @@ def build_dataset(ndvi, nass, oj):
 
     df = pd.DataFrame(rows).set_index("year")
 
-    # Rolling 3-year NDVI baseline (excludes current year)
     df["ndvi_3yr_avg"] = (
-        df["ndvi_jan_mar"]
-        .shift(1)
+        df["ndvi_jan_mar"].shift(1)
         .rolling(window=3, min_periods=2)
         .mean()
         .round(4)
     )
-
-    # NDVI surprise: how much greener/browner vs recent trend
     df["ndvi_surprise"] = (df["ndvi_jan_mar"] - df["ndvi_3yr_avg"]).round(4)
 
-    # Yield surprise: YoY % change in production
     df["yield_yoy_pct"] = (
-        df["production_1000_boxes"]
-        .pct_change()
-        .mul(100)
-        .round(2)
+        df["production_boxes"].pct_change().mul(100).round(2)
     )
 
-    # Composite signal: NDVI weighted by grove health (bearing acres)
-    # Normalize acres to 0-1 range relative to 2005 baseline
     if df["bearing_acres"].notna().any():
-        baseline_acres = df["bearing_acres"].iloc[0]
-        df["acres_normalized"] = (df["bearing_acres"] / baseline_acres).round(4)
-        df["ndvi_x_acres"] = (df["ndvi_jan_mar"] * df["acres_normalized"]).round(4)
+        baseline = df["bearing_acres"].iloc[0]
+        df["acres_norm"]    = (df["bearing_acres"] / baseline).round(4)
+        df["ndvi_x_acres"]  = (df["ndvi_jan_mar"] * df["acres_norm"]).round(4)
     else:
-        df["acres_normalized"] = None
+        df["acres_norm"]   = None
         df["ndvi_x_acres"] = None
 
     return df
@@ -322,9 +311,8 @@ def main():
     print(df.to_string())
     print(f"{'='*55}")
 
-    # Quick data completeness check
     print("\nData completeness:")
-    for col in ["ndvi_jan_mar", "production_1000_boxes", "bearing_acres",
+    for col in ["ndvi_jan_mar", "production_boxes", "bearing_acres",
                 "apr_close", "sep_close", "price_direction"]:
         n_valid = df[col].notna().sum()
         print(f"  {col}: {n_valid}/21 years")
