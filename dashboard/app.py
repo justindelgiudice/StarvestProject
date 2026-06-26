@@ -27,6 +27,93 @@ GOLD   = "#FBBF24"
 GRAY   = "#94A3B8"
 PURPLE = "#A78BFA"
 
+# ── Glossary definitions ───────────────────────────────────────────────────────
+GLOSSARY: dict[str, str] = {
+    "ndvi": (
+        "<b>Normalized Difference Vegetation Index</b> — satellite measure of "
+        "vegetation greenness (0→1). Starvest pulls Jan–Mar MODIS MOD13Q1 NDVI "
+        "at 250 m resolution over the FL citrus belt (26.5–28.5°N, 80–82.5°W) "
+        "from Google Earth Engine. Healthy dense citrus groves ≈ 0.50–0.70."
+    ),
+    "ndvi_surprise": (
+        "<b>NDVI Surprise</b> = current Jan–Mar NDVI minus the rolling 3-year "
+        "baseline average. Negative → grove canopy below average (stress signal "
+        "→ LONG). Positive → above average (healthy canopy → SHORT). "
+        "This single number drives every trade signal."
+    ),
+    "ndvi_x_acres": (
+        "<b>NDVI × Acres</b> = Jan–Mar NDVI × (bearing acres / 2005 peak acres). "
+        "Weights greenness by the shrinking grove footprint to capture both health "
+        "and structural HLB-driven collapse. Fell from ~0.54 in 2005 to ~0.17 by 2025."
+    ),
+    "bearing_acres": (
+        "<b>Bearing acres</b> — citrus grove area old enough to produce fruit, "
+        "per USDA NASS annual survey. Florida peaked at 541,800 acres in 2005. "
+        "HLB disease has driven a 69% collapse to ~167,400 acres by 2025."
+    ),
+    "fcoj": (
+        "<b>FCOJ futures (OJ=F)</b> — Frozen Concentrated Orange Juice futures "
+        "traded on ICE, priced in cents per pound of soluble solids. The most "
+        "liquid benchmark for FL orange supply and demand."
+    ),
+    "apr_sep": (
+        "<b>Apr / Sep Close</b> — monthly average OJ futures close price in "
+        "April (entry) and September (exit). Price direction is bullish when "
+        "Sep > Apr, bearish when Sep < Apr."
+    ),
+    "hit_rate": (
+        "<b>Hit rate</b> — % of signal years where the predicted direction "
+        "(LONG → price rises, SHORT → price falls) matched the actual Apr→Sep "
+        "move. A coin flip would be ~50%. Only years with a non-neutral signal "
+        "are counted."
+    ),
+    "cum_pnl": (
+        "<b>Cumulative P&amp;L</b> — running total of trade returns as % of the "
+        "April entry price. LONG return = (Sep−Apr)/Apr. SHORT return = "
+        "(Apr−Sep)/Apr. Excludes futures margin requirements, roll costs, "
+        "and slippage."
+    ),
+    "yield_surprise": (
+        "<b>Yield surprise</b> — year-over-year % change in Florida orange "
+        "production (million 90-lb boxes per USDA NASS). A large negative "
+        "surprise typically signals a supply shock and subsequent OJ price rise."
+    ),
+    "hlb": (
+        "<b>HLB (Huanglongbing / citrus greening)</b> — fatal bacterial disease "
+        "spread by the Asian citrus psyllid, first confirmed in FL in 2005. "
+        "Destroys the phloem; causes small, bitter, misshapen fruit and tree "
+        "death within 5–8 years. No cure exists. Primary driver of FL collapse."
+    ),
+    "long_signal": (
+        "<b>LONG signal</b> — issued when NDVI surprise &lt; −threshold. "
+        "Grove canopy is below its 3-yr average, signaling vegetation stress and "
+        "an expected yield shortfall. Bullish OJ price view: buy April futures, "
+        "exit at September expiry."
+    ),
+    "short_signal": (
+        "<b>SHORT signal</b> — issued when NDVI surprise &gt; +threshold. "
+        "Grove canopy is above its 3-yr average, signaling healthier trees and "
+        "an expected higher yield. Bearish OJ price view: sell April futures, "
+        "exit at September expiry."
+    ),
+}
+
+
+def tip(key: str, align: str = "left") -> str:
+    """Return an inline ℹ icon with a CSS hover tooltip for the given glossary key."""
+    text = GLOSSARY.get(key, "")
+    align_css = "left:0;transform:none;" if align == "left" else (
+        "right:0;left:auto;transform:none;" if align == "right" else
+        "left:50%;transform:translateX(-50%);"
+    )
+    return (
+        f'<span class="tipwrap">'
+        f'<span class="tipicon">i</span>'
+        f'<span class="tipbox" style="{align_css}">{text}</span>'
+        f'</span>'
+    )
+
+
 PLOTLY_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
@@ -120,6 +207,45 @@ div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
 .js-plotly-plot .ewdrag,
 .js-plotly-plot .nsdrag,
 .js-plotly-plot .drag { cursor: default !important; }
+/* ── Glossary tooltip ── */
+.tipwrap {
+    position: relative; display: inline-block;
+    vertical-align: middle; margin-left: 5px;
+}
+.tipicon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: rgba(96,165,250,0.18); border: 1px solid rgba(96,165,250,0.38);
+    color: #60A5FA; font-size: 9px; font-weight: 700; font-style: italic;
+    cursor: help; line-height: 1; flex-shrink: 0;
+}
+.tipbox {
+    display: none; position: absolute;
+    top: calc(100% + 7px);
+    background: #1a1d2e; border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 10px; padding: 11px 14px; width: 260px;
+    font-size: 12px; line-height: 1.65; color: #CBD5E1;
+    box-shadow: 0 10px 36px rgba(0,0,0,0.55); z-index: 99999;
+    pointer-events: none; white-space: normal;
+    font-weight: 400; font-style: normal; text-transform: none; letter-spacing: 0;
+}
+.tipwrap:hover .tipbox { display: block; }
+/* Prevent parent containers from clipping tooltips */
+[data-testid="column"],
+[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"] { overflow: visible !important; }
+.card { overflow: visible !important; }
+/* Glossary tab term cards */
+.gterm {
+    background: #1a1d2e; border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px; padding: 18px 20px; margin-bottom: 12px;
+    border-left-width: 3px; border-left-style: solid;
+}
+.gterm-name { font-size: 14px; font-weight: 700; color: #E2E8F0; margin-bottom: 4px; }
+.gterm-cat  { font-size: 10px; font-weight: 600; letter-spacing: .6px;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+    display: inline-block; margin-left: 8px; vertical-align: middle; }
+.gterm-def  { font-size: 13px; color: #94A3B8; line-height: 1.7; margin-top: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -151,8 +277,8 @@ st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:12px 0 18px">
 # ═════════════════════════════════════════════════════════════════════════════
 # TABS
 # ═════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["  Overview  ", "  NDVI Trend  ", "  Yield vs Price  ", "  Backtest  ", "  Signal  "]
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["  Overview  ", "  NDVI Trend  ", "  Yield vs Price  ", "  Backtest  ", "  Signal  ", "  Glossary  "]
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,22 +304,22 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-    card(k1, f"{latest_year} Production",
+    card(k1, f"{latest_year} Production {tip('yield_surprise')}",
          f"{prod_25:.1f}M boxes",
          f"{(prod_25/prod_05-1)*100:.0f}% vs 2005 peak",
          ORANGE, RED)
 
-    card(k2, "Bearing Acres",
+    card(k2, f"Bearing Acres {tip('bearing_acres')}",
          f"{acres_25/1e3:.0f}K",
          f"{(acres_25/acres_05-1)*100:.0f}% vs 2005",
          BLUE, RED)
 
-    card(k3, f"Apr {latest_year} OJ Price",
+    card(k3, f"Apr {latest_year} OJ Price {tip('fcoj')}",
          f"{apr_25:.0f}¢/lb",
          f"+{(apr_25/apr_05-1)*100:.0f}% vs 2005",
          GOLD, GREEN)
 
-    card(k4, "Signal Hit Rate",
+    card(k4, f"Signal Hit Rate {tip('hit_rate')}",
          f"{hit0:.0%}",
          f"{int(bt0['correct'].sum())}/{len(bt0)} years · threshold=0",
          PURPLE, GRAY)
@@ -240,18 +366,44 @@ with tab1:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("""
-**How Starvest works:**
-Three signals feed a single Jan-Mar directional call on OJ futures (April close → September close):
-
-| Signal | Source | Logic |
-|--------|--------|-------|
-| NDVI Jan-Mar | MODIS MOD13Q1 250m via GEE | Below 3-yr avg → stress → lower yield → price up |
-| NDVI Surprise | NDVI vs rolling 3-yr baseline | Magnitude of deviation → confidence in call |
-| NDVI × Acres | NDVI weighted by grove footprint | Structural shrinkage (HLB disease) ↓ 69% since 2005 |
-
-> **Note:** NDVI sees vegetation greenness, not fruit count. HLB-infected trees can appear green while producing near-zero fruit — a fundamental limitation the `ndvi_x_acres` composite partially corrects for.
-""")
+    st.markdown(
+        f'<p style="font-weight:700;margin-bottom:6px">How Starvest works:</p>'
+        f'<p style="color:#94A3B8;font-size:13px;margin-bottom:10px">'
+        f'Three signals feed a single Jan–Mar directional call on '
+        f'FCOJ futures {tip("fcoj")} (April close → September close {tip("apr_sep")}):</p>'
+        f'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px">'
+        f'<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1)">'
+        f'<th style="text-align:left;padding:8px 10px;color:#64748b;font-weight:600">Signal</th>'
+        f'<th style="text-align:left;padding:8px 10px;color:#64748b;font-weight:600">Source</th>'
+        f'<th style="text-align:left;padding:8px 10px;color:#64748b;font-weight:600">Logic</th>'
+        f'</tr></thead><tbody>'
+        f'<tr style="border-bottom:1px solid rgba(255,255,255,0.05)">'
+        f'<td style="padding:8px 10px;color:#E2E8F0;font-weight:600">'
+        f'NDVI Jan-Mar {tip("ndvi")}</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">MODIS MOD13Q1 250m via GEE</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">Below 3-yr avg → stress → lower yield → price up</td>'
+        f'</tr>'
+        f'<tr style="border-bottom:1px solid rgba(255,255,255,0.05)">'
+        f'<td style="padding:8px 10px;color:#E2E8F0;font-weight:600">'
+        f'NDVI Surprise {tip("ndvi_surprise")}</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">NDVI vs rolling 3-yr baseline</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">Magnitude of deviation → confidence in call</td>'
+        f'</tr>'
+        f'<tr>'
+        f'<td style="padding:8px 10px;color:#E2E8F0;font-weight:600">'
+        f'NDVI × Acres {tip("ndvi_x_acres")}</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">NDVI weighted by grove footprint</td>'
+        f'<td style="padding:8px 10px;color:#94A3B8">'
+        f'Structural shrinkage (HLB {tip("hlb")}) ↓ 69% since 2005</td>'
+        f'</tr>'
+        f'</tbody></table>'
+        f'<div style="background:rgba(148,163,184,0.07);border-left:3px solid rgba(148,163,184,0.3);'
+        f'border-radius:0 8px 8px 0;padding:10px 14px;font-size:12px;color:#94A3B8;line-height:1.6">'
+        f'<b style="color:#CBD5E1">Note:</b> NDVI measures vegetation greenness, not fruit count. '
+        f'HLB-infected trees can appear green while producing near-zero fruit — '
+        f'a fundamental limitation the NDVI × Acres composite partially corrects for.</div>',
+        unsafe_allow_html=True,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 · NDVI TREND
@@ -327,21 +479,27 @@ with tab2:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("""
-**NDVI interpretation:**
-- Range 0→1; healthy dense vegetation ≈ 0.5–0.7
-- Jan-Mar captures the FL citrus belt *before* summer rainy season
-- Surprise < 0 (red bar) = browner than typical → potential stress signal
-- Surprise > 0 (green bar) = greener than typical → healthier canopy
-""")
+        st.markdown(
+            f'<p style="font-weight:700;margin-bottom:6px">NDVI {tip("ndvi")} interpretation:</p>'
+            f'<ul style="color:#94A3B8;font-size:13px;line-height:2;margin:0;padding-left:18px">'
+            f'<li>Range 0→1; healthy dense citrus groves ≈ 0.50–0.70</li>'
+            f'<li>Jan–Mar captures the citrus belt <em>before</em> summer rainy season</li>'
+            f'<li>Surprise {tip("ndvi_surprise")} &lt; 0 (red bar) = browner than typical → stress signal</li>'
+            f'<li>Surprise &gt; 0 (green bar) = greener than typical → healthier canopy</li>'
+            f'</ul>',
+            unsafe_allow_html=True,
+        )
     with col_b:
-        st.markdown("""
-**NDVI × Acres (composite):**
-- NDVI is normalized by grove size relative to 2005 baseline
-- 0.54 → 0.17 over 20 years = both fewer trees *and* stressed trees
-- This better reflects total OJ supply capacity than NDVI alone
-- HLB-infected trees look green but produce almost no fruit
-""")
+        st.markdown(
+            f'<p style="font-weight:700;margin-bottom:6px">NDVI × Acres {tip("ndvi_x_acres")} composite:</p>'
+            f'<ul style="color:#94A3B8;font-size:13px;line-height:2;margin:0;padding-left:18px">'
+            f'<li>NDVI weighted by grove size relative to 2005 baseline</li>'
+            f'<li>0.54 → 0.17 over 20 years = fewer trees <em>and</em> stressed trees</li>'
+            f'<li>Better reflects OJ supply capacity than NDVI alone</li>'
+            f'<li>HLB {tip("hlb")} infected trees look green but yield near-zero fruit</li>'
+            f'</ul>',
+            unsafe_allow_html=True,
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 · YIELD vs PRICE
@@ -452,9 +610,9 @@ with tab4:
             unsafe_allow_html=True,
         )
 
-    mini(m1, "Hit Rate", f"{hit:.0%}", GREEN if hit >= 0.55 else RED)
+    mini(m1, f"Hit Rate {tip('hit_rate')}", f"{hit:.0%}", GREEN if hit >= 0.55 else RED)
     mini(m2, "Years Tested", f"{n_ok}/{n_tot}", GRAY)
-    mini(m3, "Cum P&L", f"{cum_pnl:+.1f}%", GREEN if cum_pnl >= 0 else RED)
+    mini(m3, f"Cum P&L {tip('cum_pnl')}", f"{cum_pnl:+.1f}%", GREEN if cum_pnl >= 0 else RED)
     mini(m4, "Avg Win", f"{avg_win:+.1f}%", GREEN)
     mini(m5, "Avg Loss", f"{avg_los:+.1f}%", RED)
 
@@ -543,15 +701,18 @@ with tab5:
 
     left, right = st.columns([1, 1])
 
+    sig_tip = tip("long_signal") if sig == "LONG" else (tip("short_signal") if sig == "SHORT" else "")
     with left:
         st.markdown(
             f'<div style="background:{sig_bg};border:1px solid {sig_color}33;border-radius:16px;'
-            f'padding:32px;text-align:center;margin-bottom:16px">'
+            f'padding:32px;text-align:center;margin-bottom:16px;overflow:visible">'
             f'<div style="color:{sig_color};font-size:11px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">'
             f'{latest_year} Signal — Jan-Mar NDVI Basis</div>'
-            f'<div style="font-size:4rem;font-weight:800;color:{sig_color};line-height:1">{sig}</div>'
+            f'<div style="font-size:4rem;font-weight:800;color:{sig_color};line-height:1">'
+            f'{sig} {sig_tip}</div>'
             f'<div style="font-size:14px;color:#94A3B8;margin-top:12px">'
-            f'NDVI surprise: <span style="color:{sig_color};font-weight:700">{surprise:+.4f}</span>'
+            f'NDVI surprise {tip("ndvi_surprise","center")}: '
+            f'<span style="color:{sig_color};font-weight:700">{surprise:+.4f}</span>'
             f' &nbsp;|&nbsp; threshold: 0.000</div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -560,13 +721,13 @@ with tab5:
         # NDVI detail card
         st.markdown(
             f'<div class="card" style="text-align:left;margin-bottom:12px">'
-            f'<div class="card-label">NDVI DETAIL · {latest_year}</div>'
+            f'<div class="card-label">NDVI {tip("ndvi")} DETAIL · {latest_year}</div>'
             f'<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:14px">'
             f'<tr><td style="color:#64748b;padding:4px 0">Jan-Mar NDVI</td>'
             f'    <td style="text-align:right;font-weight:600">{ndvi:.4f}</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">3-yr baseline</td>'
             f'    <td style="text-align:right;font-weight:600">{avg3:.4f}</td></tr>'
-            f'<tr><td style="color:#64748b;padding:4px 0">Surprise</td>'
+            f'<tr><td style="color:#64748b;padding:4px 0">Surprise {tip("ndvi_surprise","right")}</td>'
             f'    <td style="text-align:right;font-weight:700;color:{sig_color}">{surprise:+.4f}</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">Signal</td>'
             f'    <td style="text-align:right;font-weight:700;color:{sig_color}">{sig}</td></tr>'
@@ -676,3 +837,45 @@ with tab5:
     fig.update_layout(**PLOTLY_LAYOUT, height=300)
     fig.update_layout(margin=dict(l=40, r=40, t=60, b=20))
     st.plotly_chart(fig, use_container_width=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6 · GLOSSARY
+# ─────────────────────────────────────────────────────────────────────────────
+with tab6:
+    st.markdown(
+        '<h2 style="font-size:1.35rem;font-weight:800;margin-bottom:2px">Glossary</h2>'
+        '<p style="color:#64748b;font-size:13px;margin-bottom:22px">'
+        'Definitions for every signal, metric, and term used in Starvest.</p>',
+        unsafe_allow_html=True,
+    )
+
+    TERMS = [
+        ("NDVI",             "ndvi",           "Satellite signal",  BLUE),
+        ("NDVI Surprise",    "ndvi_surprise",  "Core signal",       ORANGE),
+        ("NDVI × Acres",     "ndvi_x_acres",   "Composite signal",  PURPLE),
+        ("Bearing Acres",    "bearing_acres",  "Supply metric",     GREEN),
+        ("FCOJ Futures",     "fcoj",           "Market",            GOLD),
+        ("Apr / Sep Close",  "apr_sep",        "Price reference",   BLUE),
+        ("Hit Rate",         "hit_rate",       "Backtest metric",   GREEN),
+        ("Cumulative P&L",   "cum_pnl",        "Backtest metric",   GREEN),
+        ("Yield Surprise",   "yield_surprise", "Supply metric",     ORANGE),
+        ("HLB Disease",      "hlb",            "Context",           RED),
+        ("LONG Signal",      "long_signal",    "Trade signal",      GREEN),
+        ("SHORT Signal",     "short_signal",   "Trade signal",      RED),
+    ]
+
+    for i in range(0, len(TERMS), 2):
+        pair = TERMS[i:i+2]
+        cols = st.columns(len(pair))
+        for col, (name, key, category, color) in zip(cols, pair):
+            col.markdown(
+                f'<div class="gterm" style="border-left-color:{color}">'
+                f'<div>'
+                f'<span class="gterm-name">{name}</span>'
+                f'<span class="gterm-cat" style="background:{color}22;color:{color}">'
+                f'{category}</span>'
+                f'</div>'
+                f'<div class="gterm-def">{GLOSSARY[key]}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
