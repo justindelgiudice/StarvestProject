@@ -7,7 +7,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -492,10 +491,11 @@ with tab2:
         hovertemplate="avg=%{y:.4f}<extra></extra>",
     ), row=1, col=1)
 
-    # shade the gap
+    # shade the gap (only rows where 3yr avg is available to avoid fill discontinuity)
+    _shade = df[df["ndvi_3yr_avg"].notna()]
     fig.add_trace(go.Scatter(
-        x=list(df.index) + list(df.index[::-1]),
-        y=list(df["ndvi_jan_mar"]) + list(df["ndvi_3yr_avg"][::-1]),
+        x=list(_shade.index) + list(_shade.index[::-1]),
+        y=list(_shade["ndvi_jan_mar"]) + list(_shade["ndvi_3yr_avg"][::-1]),
         fill="toself",
         fillcolor="rgba(34,197,94,0.08)",
         line=dict(color="rgba(0,0,0,0)"),
@@ -650,8 +650,6 @@ with tab4:
     dft = compute_signals(raw, threshold=threshold)
     bt  = dft[dft["correct"].notna()].copy()
 
-    n_long  = (bt["signal"] == "LONG").sum()
-    n_short = (bt["signal"] == "SHORT").sum()
     n_ok    = int(bt["correct"].sum())
     n_tot   = len(bt)
     hit     = n_ok / n_tot if n_tot else 0
@@ -747,15 +745,14 @@ with tab5:
     surprise  = latest["ndvi_surprise"]
     apr       = latest["apr_close"]
     sep       = latest["sep_close"]
-    direction = latest["price_direction"]
     correct   = latest["correct"]
     ndvi      = latest["ndvi_jan_mar"]
     avg3      = latest["ndvi_3yr_avg"]
 
     sig_color = GREEN if sig == "LONG" else (RED if sig == "SHORT" else GRAY)
-    sig_bg    = "rgba(34,197,94,.12)" if sig == "LONG" else "rgba(239,68,68,.12)"
-    outcome_color = GREEN if correct else RED
-    outcome_txt   = "CORRECT ✓" if correct else "INCORRECT ✗"
+    sig_bg    = "rgba(34,197,94,.12)" if sig == "LONG" else ("rgba(239,68,68,.12)" if sig == "SHORT" else "rgba(148,163,184,.12)")
+    outcome_color = GREEN if correct is True else (RED if correct is False else GRAY)
+    outcome_txt   = "CORRECT ✓" if correct is True else ("INCORRECT ✗" if correct is False else "PENDING —")
 
     left, right = st.columns([1, 1])
 
@@ -805,7 +802,7 @@ with tab5:
             f'    <td style="text-align:right;font-weight:600">{sep:.1f}¢</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">Actual move</td>'
             f'    <td style="text-align:right;font-weight:600">'
-            f'    {actual_move:+.1f}%</td></tr>'
+            f'    {f"{actual_move:+.1f}%" if actual_move is not None else "N/A"}</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">Signal outcome</td>'
             f'    <td style="text-align:right;font-weight:700;color:{outcome_color}">{outcome_txt}</td></tr>'
             f'</table></div>',
@@ -915,7 +912,7 @@ with tab6:
         ("FCOJ Futures",     "fcoj",           "Market",            GOLD),
         ("Apr / Sep Close",  "apr_sep",        "Price reference",   BLUE),
         ("Hit Rate",         "hit_rate",       "Backtest metric",   GREEN),
-        ("Cumulative P&L",   "cum_pnl",        "Backtest metric",   GREEN),
+        ("Cumulative P&amp;L", "cum_pnl",        "Backtest metric",   GREEN),
         ("Yield Surprise",   "yield_surprise", "Supply metric",     ORANGE),
         ("HLB Disease",      "hlb",            "Context",           RED),
         ("LONG Signal",      "long_signal",    "Trade signal",      GREEN),
