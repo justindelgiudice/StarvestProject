@@ -127,7 +127,6 @@ PLOTLY_LAYOUT = dict(
         bordercolor="rgba(255,255,255,0.12)",
         font=dict(color="#E2E8F0", family="Inter, sans-serif", size=12),
     ),
-    dragmode=False,
 )
 
 PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": False}
