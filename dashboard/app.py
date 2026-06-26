@@ -159,7 +159,7 @@ def compute_signals(df: pd.DataFrame, threshold: float = 0.0) -> pd.DataFrame:
         lambda r: (
             (r["signal"] == "LONG"  and r["price_direction"] ==  1) or
             (r["signal"] == "SHORT" and r["price_direction"] == -1)
-        ) if r["signal"] not in (None, "NEUTRAL") and pd.notna(r["price_direction"]) else None,
+        ) if r["signal"] in ("LONG", "SHORT") and pd.notna(r["price_direction"]) else None,
         axis=1,
     )
 
@@ -715,21 +715,130 @@ with tab4:
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=1, col=1)
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-    # Year-by-year table
+    # ── Brazil Confirmation Filter ─────────────────────────────────────────────
+    has_brazil = "brazil_yoy_pct" in dft.columns and dft["brazil_yoy_pct"].notna().any()
+
+    if has_brazil:
+        st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:24px 0'>", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-size:15px;font-weight:700;margin-bottom:4px">'
+            f'Brazil Confirmation Filter'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-bottom:16px">'
+            f'Only count a LONG signal when Brazil production is also <b style="color:#E2E8F0">down</b> YoY '
+            f'(global supply tightening). Only count a SHORT signal when Brazil is also '
+            f'<b style="color:#E2E8F0">up</b> YoY (global supply rising). '
+            f'Source: USDA FAS PSD bulk data — Oranges, Fresh, Brazil.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Brazil-confirmed subset of signal years
+        brazil_mask = (
+            ((dft["signal"] == "LONG")  & (dft["brazil_yoy_pct"] < 0)) |
+            ((dft["signal"] == "SHORT") & (dft["brazil_yoy_pct"] > 0))
+        )
+        bt_braz   = dft[brazil_mask & dft["correct"].notna()].copy()
+        n_ok_b    = int(bt_braz["correct"].sum())
+        n_tot_b   = len(bt_braz)
+        hit_b     = n_ok_b / n_tot_b if n_tot_b else 0
+        pnl_b     = bt_braz["trade_ret"].sum()
+        coverage  = n_tot_b / n_tot if n_tot else 0
+
+        delta_hit = hit_b - hit
+        delta_txt = f"{delta_hit:+.0%}"
+
+        _c1, _c2, _c3, _c4 = st.columns(4)
+
+        _c1.markdown(
+            f'<div class="card">'
+            f'<div class="card-label">Hit Rate</div>'
+            f'<div style="margin-top:6px">'
+            f'<div style="font-size:13px;color:#64748b">No filter: '
+            f'<span style="color:#E2E8F0;font-weight:600">{hit:.0%}</span></div>'
+            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
+            f'<span style="color:{GREEN if hit_b >= hit else RED};font-weight:700">{hit_b:.0%}</span>'
+            f'<span style="font-size:11px;color:{GREEN if hit_b >= hit else RED};margin-left:5px">'
+            f'({delta_txt})</span></div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+        _c2.markdown(
+            f'<div class="card">'
+            f'<div class="card-label">Years (confirmed)</div>'
+            f'<div style="margin-top:6px">'
+            f'<div style="font-size:13px;color:#64748b">No filter: '
+            f'<span style="color:#E2E8F0;font-weight:600">{n_ok}/{n_tot}</span></div>'
+            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
+            f'<span style="color:#E2E8F0;font-weight:700">{n_ok_b}/{n_tot_b}</span>'
+            f'<span style="font-size:11px;color:#64748b;margin-left:5px">'
+            f'({coverage:.0%} of signals)</span></div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+        _c3.markdown(
+            f'<div class="card">'
+            f'<div class="card-label">Cum P&amp;L (confirmed)</div>'
+            f'<div style="margin-top:6px">'
+            f'<div style="font-size:13px;color:#64748b">No filter: '
+            f'<span style="color:{GREEN if cum_pnl >= 0 else RED};font-weight:600">{cum_pnl:+.1f}%</span></div>'
+            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
+            f'<span style="color:{GREEN if pnl_b >= 0 else RED};font-weight:700">{pnl_b:+.1f}%</span>'
+            f'</div></div></div>',
+            unsafe_allow_html=True,
+        )
+        _c4.markdown(
+            f'<div class="card">'
+            f'<div class="card-label">Brazil filter signal</div>'
+            f'<div style="font-size:11px;color:#64748b;margin-top:6px;line-height:1.5">'
+            f'LONG requires Brazil ↓ YoY<br>'
+            f'SHORT requires Brazil ↑ YoY<br>'
+            f'<span style="color:#94A3B8">Filters out mismatched years</span>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Year-by-year table ────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Year-by-year breakdown**")
     display_df = dft[dft["signal"].notna() & (dft["signal"] != "NEUTRAL")].copy()
-    display_df = display_df[[
-        "ndvi_surprise", "signal", "apr_close", "sep_close",
-        "price_direction", "correct", "trade_ret"
-    ]].rename(columns={
-        "ndvi_surprise":  "NDVI Surprise",
-        "signal":         "Signal",
-        "apr_close":      "Apr Close (¢)",
-        "sep_close":      "Sep Close (¢)",
-        "price_direction":"Price Dir",
-        "correct":        "Correct",
-        "trade_ret":      "Return (%)",
-    })
+
+    # Add Brazil confirmation column if data is available
+    if has_brazil:
+        display_df["brazil_yoy_pct_show"] = display_df["brazil_yoy_pct"]
+        display_df["Brazil OK"] = display_df.apply(
+            lambda r: "✓" if (
+                (r["signal"] == "LONG"  and pd.notna(r["brazil_yoy_pct"]) and r["brazil_yoy_pct"] < 0) or
+                (r["signal"] == "SHORT" and pd.notna(r["brazil_yoy_pct"]) and r["brazil_yoy_pct"] > 0)
+            ) else ("—" if pd.isna(r["brazil_yoy_pct"]) else "✗"),
+            axis=1,
+        )
+        cols_show = ["ndvi_surprise", "signal", "Brazil OK", "apr_close", "sep_close",
+                     "price_direction", "correct", "trade_ret"]
+        rename_map = {
+            "ndvi_surprise":  "NDVI Surprise",
+            "signal":         "Signal",
+            "Brazil OK":      "Brazil ✓",
+            "apr_close":      "Apr Close (¢)",
+            "sep_close":      "Sep Close (¢)",
+            "price_direction":"Price Dir",
+            "correct":        "Correct",
+            "trade_ret":      "Return (%)",
+        }
+    else:
+        cols_show = ["ndvi_surprise", "signal", "apr_close", "sep_close",
+                     "price_direction", "correct", "trade_ret"]
+        rename_map = {
+            "ndvi_surprise":  "NDVI Surprise",
+            "signal":         "Signal",
+            "apr_close":      "Apr Close (¢)",
+            "sep_close":      "Sep Close (¢)",
+            "price_direction":"Price Dir",
+            "correct":        "Correct",
+            "trade_ret":      "Return (%)",
+        }
+
+    display_df = display_df[cols_show].rename(columns=rename_map)
     display_df["Correct"] = display_df["Correct"].map({True: "✓", False: "✗"})
     display_df["Price Dir"] = display_df["Price Dir"].map({1.0: "↑", -1.0: "↓"})
     display_df["NDVI Surprise"] = display_df["NDVI Surprise"].map("{:+.4f}".format)

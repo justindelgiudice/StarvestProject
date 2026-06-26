@@ -1,11 +1,12 @@
 """
 Starvest Data Pipeline
 ======================
-Pulls four datasets and merges them into a single CSV:
+Pulls five datasets and merges them into a single CSV:
   1. MODIS NDVI (Jan-Mar average) via Google Earth Engine
   2. Florida orange production + bearing acreage via USDA NASS API
   3. OJ futures April/September close price via yfinance
-  4. FL citrus-belt hard freeze flag (Jan-Mar) via Open-Meteo archive
+  4. FL citrus-belt hard freeze flag (Jan-Mar) via NOAA GHCN-Daily
+  5. Brazil orange production via USDA FAS PSD bulk download
 
 Output: starvest_data.csv with one row per year (2005-2025)
 
@@ -23,6 +24,7 @@ GEE setup:
 import io
 import os
 import time
+import zipfile
 import requests
 import pandas as pd
 import yfinance as yf
@@ -348,21 +350,82 @@ def get_freeze_data() -> dict:
     return results
 
 
-# ── 5. Merge & Compute Yield Surprise Signal ──────────────────────────────────
+# ── 5. Brazil Orange Production via USDA FAS PSD Bulk Download ───────────────
 
-def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict) -> pd.DataFrame:
+FAS_BULK_URL = "https://apps.fas.usda.gov/psdonline/downloads/psd_alldata_csv.zip"
+
+
+def get_brazil_orange_production() -> dict:
     """
-    Merges all four sources and computes:
-      ndvi_3yr_avg       – rolling 3-year NDVI baseline (excludes current year)
-      ndvi_surprise      – current NDVI minus 3yr avg
-      yield_yoy_pct      – YoY % change in production
-      acres_norm         – bearing acres relative to 2005 baseline
-      ndvi_x_acres       – NDVI weighted by grove health proxy
-      freeze_flag        – 1 if hard freeze (≤28°F) in Jan-Mar citrus belt
-      freeze_days        – count of hard-freeze days in Jan-Mar
-      min_temp_janmar_f  – coldest belt temperature in Jan-Mar (°F)
+    Returns {market_year: production_mt} for Brazil fresh oranges 2005-2025.
+
+    Source: USDA FAS PSD (Production, Supply & Distribution) bulk CSV.
+    Commodity: 'Oranges, Fresh' (country_code='BR', attribute_id=28).
+    Unit: values are in 1000 MT in the source; returned here in metric tons.
+
+    The FAS REST API (/psdonline/api/v1/) is currently unavailable (returns 404),
+    so we use the equivalent bulk download which contains the same dataset.
+    When multiple revisions exist for a market year, the most recent is kept.
     """
-    print("\n[5/5] Merging datasets and computing signals...")
+    print("\n[5/5] Fetching Brazil orange production from USDA FAS PSD...")
+
+    try:
+        r = requests.get(FAS_BULK_URL, timeout=90, headers={"User-Agent": "Starvest/1.0"})
+        r.raise_for_status()
+
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        df = pd.read_csv(z.open("psd_alldata.csv"))
+
+        prod = df[
+            (df["Country_Code"] == "BR") &
+            (df["Commodity_Description"] == "Oranges, Fresh") &
+            (df["Attribute_ID"] == 28) &
+            (df["Market_Year"].between(START_YEAR, END_YEAR))
+        ].copy()
+
+        if prod.empty:
+            print("  WARNING: No Brazil orange production rows found in FAS bulk data")
+            return {}
+
+        # Keep the most recent revision per market year (highest Calendar_Year + Month)
+        prod = (
+            prod.sort_values(["Calendar_Year", "Month"])
+            .groupby("Market_Year")
+            .last()
+            .reset_index()
+        )
+
+        result = {}
+        for _, row in prod.iterrows():
+            year = int(row["Market_Year"])
+            mt   = float(row["Value"]) * 1000  # source is in 1000 MT
+            result[year] = mt
+            print(f"  {year}: {mt/1e6:.2f}M MT")
+
+        return result
+
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return {}
+
+
+# ── 6. Merge & Compute Yield Surprise Signal ──────────────────────────────────
+
+def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict) -> pd.DataFrame:
+    """
+    Merges all five sources and computes:
+      ndvi_3yr_avg         – rolling 3-year NDVI baseline (excludes current year)
+      ndvi_surprise        – current NDVI minus 3yr avg
+      yield_yoy_pct        – YoY % change in FL production
+      acres_norm           – bearing acres relative to 2005 baseline
+      ndvi_x_acres         – NDVI weighted by grove health proxy
+      freeze_flag          – 1 if hard freeze (≤30°F) in Jan-Mar citrus belt
+      freeze_days          – count of hard-freeze days in Jan-Mar
+      min_temp_janmar_f    – coldest belt temperature in Jan-Mar (°F)
+      brazil_production_mt – Brazil annual orange production in metric tons (USDA FAS)
+      brazil_yoy_pct       – YoY % change in Brazil production
+    """
+    print("\n[6/6] Merging datasets and computing signals...")
 
     rows = []
     for year in range(START_YEAR, END_YEAR + 1):
@@ -383,6 +446,8 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict) -> pd.DataFram
         row["freeze_days"]       = freeze_year.get("freeze_days")
         row["min_temp_janmar_f"] = freeze_year.get("min_temp_janmar_f")
 
+        row["brazil_production_mt"] = brazil.get(year)
+
         rows.append(row)
 
     df = pd.DataFrame(rows).set_index("year")
@@ -397,6 +462,10 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict) -> pd.DataFram
 
     df["yield_yoy_pct"] = (
         df["production_boxes"].pct_change().mul(100).round(2)
+    )
+
+    df["brazil_yoy_pct"] = (
+        df["brazil_production_mt"].pct_change().mul(100).round(2)
     )
 
     if df["bearing_acres"].notna().any():
@@ -415,15 +484,16 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict) -> pd.DataFram
 def main():
     print("=" * 55)
     print("  STARVEST DATA PIPELINE")
-    print("  Pulling 2005-2025 | MODIS + NASS + OJ Futures + Freeze")
+    print("  Pulling 2005-2025 | MODIS + NASS + OJ Futures + Freeze + Brazil FAS")
     print("=" * 55)
 
     ndvi   = get_ndvi_time_series()
     nass   = get_nass_data()
     oj     = get_oj_prices()
     freeze = get_freeze_data()
+    brazil = get_brazil_orange_production()
 
-    df = build_dataset(ndvi, nass, oj, freeze)
+    df = build_dataset(ndvi, nass, oj, freeze, brazil)
 
     df.to_csv(OUTPUT_FILE)
     print(f"\nSaved to {OUTPUT_FILE}")
@@ -434,7 +504,8 @@ def main():
     print("\nData completeness:")
     for col in ["ndvi_jan_mar", "production_boxes", "bearing_acres",
                 "apr_close", "sep_close", "price_direction",
-                "freeze_flag", "freeze_days", "min_temp_janmar_f"]:
+                "freeze_flag", "freeze_days", "min_temp_janmar_f",
+                "brazil_production_mt", "brazil_yoy_pct"]:
         n_valid = df[col].notna().sum()
         print(f"  {col}: {n_valid}/21 years")
 
