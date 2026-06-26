@@ -20,6 +20,7 @@ GEE setup:
     Set GEE_PROJECT=your-project-id in .env
 """
 
+import io
 import os
 import time
 import requests
@@ -238,80 +239,100 @@ def get_oj_prices():
         return {}
 
 
-# ── 4. FL Citrus-Belt Hard Freeze Flag via Open-Meteo ────────────────────────
+# ── 4. FL Citrus-Belt Hard Freeze Flag via NOAA GHCN-Daily ───────────────────
 
-# Hard freeze threshold for citrus damage (standard USDA/NASS definition)
-HARD_FREEZE_F = 28.0  # °F
+# Citrus soft-freeze damage threshold (30°F catches more events than 28°F,
+# especially the multi-night events that accumulate grove damage)
+HARD_FREEZE_F = 30.0  # °F
 
-# Five monitoring points spanning the FL citrus belt
-BELT_POINTS = [
-    (27.9, -81.7),  # Polk County (largest citrus county)
-    (27.5, -81.3),  # Highlands County
-    (27.6, -80.5),  # Indian River County
-    (27.4, -80.4),  # St. Lucie County
-    (26.6, -81.4),  # Hendry County (southern belt)
-]
+# NOAA GHCN-D station IDs — FL citrus belt and reliable nearby airports
+# Files live at ncei.noaa.gov/pub/data/ghcn/daily/by_station/<ID>.csv.gz
+# Mix of cooperative (USC) and airport (USW) stations for coverage through 2025
+GHCN_STATIONS = {
+    "USC00080228": "Avon Park 2W, Highlands Co.",  # freeze-prone belt, 2005-2021
+    "USW00012842": "Tampa Intl Airport",           # active through present, 30 mi W
+    "USW00012815": "Orlando McCoy Airport",        # active through present, eastern FL
+}
+
+GHCN_BASE = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_station"
 
 
 def get_freeze_data() -> dict:
     """
     Returns {year: {freeze_flag, freeze_days, min_temp_janmar_f}} for each year.
 
-    freeze_flag        – 1 if any belt point hit ≤ 28°F on any Jan-Mar day, else 0
-    freeze_days        – number of days where belt minimum ≤ 28°F
-    min_temp_janmar_f  – coldest single reading across belt and period
+    freeze_flag        – 1 if any station hit ≤ 30°F on any Jan-Mar day, else 0
+    freeze_days        – count of days where the cross-station minimum ≤ 30°F
+    min_temp_janmar_f  – coldest single reading across all stations and period
 
-    Source: Open-Meteo Historical Archive (free, no API key).
-    Batches the full date range into one request per monitoring point (5 total).
+    Source: NOAA GHCN-Daily by-station CSV files (no auth required).
+    Downloads the full station history once per station; filters in Python.
+    TMIN values in GHCN-D are tenths of °C → converted to °F here.
     """
-    print("\n[4/4] Fetching hard freeze data from Open-Meteo historical archive...")
+    print("\n[4/4] Fetching NOAA GHCN-D hard freeze data...")
 
     from collections import defaultdict
 
-    # date_str → coldest tmin across all belt points that day
+    # YYYYMMDD → coldest TMIN (°F) across all stations that day
     belt_daily_min: dict[str, float] = defaultdict(lambda: float("inf"))
 
-    for lat, lon in BELT_POINTS:
+    for station_id, label in GHCN_STATIONS.items():
+        url = f"{GHCN_BASE}/{station_id}.csv.gz"
         try:
-            r = requests.get(
-                "https://archive-api.open-meteo.com/v1/archive",
-                params={
-                    "latitude":         lat,
-                    "longitude":        lon,
-                    "start_date":       f"{START_YEAR}-01-01",
-                    "end_date":         f"{END_YEAR}-03-31",
-                    "daily":            "temperature_2m_min",
-                    "temperature_unit": "fahrenheit",
-                    "timezone":         "America/New_York",
-                },
-                timeout=30,
-            )
+            r = requests.get(url, timeout=60)
             r.raise_for_status()
-            payload = r.json()
-            for date_str, tmin in zip(
-                payload["daily"]["time"],
-                payload["daily"]["temperature_2m_min"],
-            ):
-                if tmin is not None:
-                    belt_daily_min[date_str] = min(belt_daily_min[date_str], tmin)
-            print(f"  Fetched ({lat}, {lon})")
-            time.sleep(0.5)
+
+            df_st = pd.read_csv(
+                io.BytesIO(r.content),
+                compression="gzip",
+                header=None,
+                names=["station", "date", "element", "value",
+                       "mflag", "qflag", "sflag", "obs_time"],
+                dtype={"date": str, "value": "float64"},
+            )
+
+            # TMIN only; blank qflag = passed all quality checks
+            tmin = df_st[
+                (df_st["element"] == "TMIN") &
+                (df_st["qflag"].isna() | (df_st["qflag"].str.strip() == ""))
+            ].copy()
+
+            # GHCN value = tenths of °C → convert to °F
+            tmin["temp_f"] = tmin["value"] / 10.0 * 9.0 / 5.0 + 32.0
+
+            # Filter to Jan-Mar within our year range
+            tmin["year"]  = tmin["date"].str[:4].astype(int)
+            tmin["month"] = tmin["date"].str[4:6]
+            janmar = tmin[
+                (tmin["year"].between(START_YEAR, END_YEAR)) &
+                (tmin["month"].isin(["01", "02", "03"]))
+            ]
+
+            for _, row in janmar.iterrows():
+                belt_daily_min[row["date"]] = min(
+                    belt_daily_min[row["date"]], row["temp_f"]
+                )
+
+            print(f"  {label}: {len(janmar)} Jan-Mar readings loaded")
+
         except Exception as e:
-            print(f"  Open-Meteo error ({lat}, {lon}): {e}")
+            print(f"  {label} ({station_id}): error — {e}")
 
     if not belt_daily_min:
-        print("  ERROR: No data retrieved — check network or Open-Meteo availability")
+        print("  ERROR: No GHCN data loaded")
         return {}
 
     results = {}
     for year in range(START_YEAR, END_YEAR + 1):
-        # Keep only Jan-Mar dates for this year
+        year_str = str(year)
         year_days = {
             d: t for d, t in belt_daily_min.items()
-            if d[:4] == str(year) and d[5:7] in ("01", "02", "03")
+            if d[:4] == year_str and d[4:6] in ("01", "02", "03")
         }
         if not year_days:
-            results[year] = {"freeze_flag": None, "freeze_days": None, "min_temp_janmar_f": None}
+            results[year] = {
+                "freeze_flag": None, "freeze_days": None, "min_temp_janmar_f": None
+            }
             continue
 
         min_temp    = min(year_days.values())
@@ -322,7 +343,7 @@ def get_freeze_data() -> dict:
             "min_temp_janmar_f": round(min_temp, 1),
         }
         marker = "❄ FREEZE" if min_temp <= HARD_FREEZE_F else "— no freeze"
-        print(f"  {year}: min={min_temp:.1f}°F, {freeze_days} freeze day(s) → {marker}")
+        print(f"  {year}: min={min_temp:.1f}°F, {freeze_days} day(s) → {marker}")
 
     return results
 
