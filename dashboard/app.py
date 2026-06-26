@@ -131,20 +131,6 @@ PLOTLY_LAYOUT = dict(
 
 PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": False}
 
-# Overview chart only: +/− buttons at top, no scroll zoom.
-# Removes every modebar entry except zoomIn2d, zoomOut2d, resetScale2d.
-OVERVIEW_CONFIG = {
-    "scrollZoom": False,
-    "displayModeBar": True,
-    "displaylogo": False,
-    "modeBarButtonsToRemove": [
-        "zoom2d", "pan2d", "select2d", "lasso2d",
-        "autoScale2d", "toImage", "sendDataToCloud",
-        "hoverClosestCartesian", "hoverCompareCartesian",
-        "toggleSpikelines",
-    ],
-}
-
 # ── Data ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
 
@@ -222,31 +208,28 @@ div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
 .js-plotly-plot .nsewdrag,
 .js-plotly-plot .ewdrag,
 .js-plotly-plot .nsdrag { cursor: default !important; }
-/* ── Overview zoom toolbar (only visible on the one chart that shows it) ── */
-.js-plotly-plot .modebar-container {
-    top: 6px !important; right: 8px !important;
+/* ── Overview zoom buttons ── */
+div[data-testid="stButton"] > button {
+    background: rgba(26,29,46,0.95) !important;
+    border: 1px solid rgba(255,255,255,0.13) !important;
+    color: #CBD5E1 !important;
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    border-radius: 8px !important;
+    padding: 7px 0 !important;
+    line-height: 1 !important;
+    width: 100% !important;
+    transition: background 0.15s, border-color 0.15s, color 0.15s !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35) !important;
 }
-.js-plotly-plot .modebar-group {
-    background: rgba(15,17,30,0.88) !important;
-    border: 1px solid rgba(255,255,255,0.11) !important;
-    border-radius: 7px !important;
-    padding: 3px 4px !important;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.45) !important;
-    display: flex !important; gap: 1px !important;
+div[data-testid="stButton"] > button:hover {
+    background: rgba(96,165,250,0.14) !important;
+    border-color: rgba(96,165,250,0.45) !important;
+    color: #60A5FA !important;
 }
-.js-plotly-plot .modebar-btn {
-    border-radius: 5px !important;
-    padding: 5px 7px !important;
-    opacity: 1 !important;
+div[data-testid="stButton"] > button:active {
+    background: rgba(96,165,250,0.26) !important;
 }
-.js-plotly-plot .modebar-btn path {
-    fill: #64748b !important;
-    transition: fill 0.15s !important;
-}
-.js-plotly-plot .modebar-btn:hover {
-    background: rgba(96,165,250,0.13) !important;
-}
-.js-plotly-plot .modebar-btn:hover path { fill: #60A5FA !important; }
 /* ── Glossary tooltip ── */
 .tipwrap {
     position: relative; display: inline-block;
@@ -366,7 +349,40 @@ with tab1:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Production + acres collapse chart
+    # ── Zoom state ────────────────────────────────────────────────────────────
+    _x0 = float(df.index.min()) - 0.5
+    _x1 = float(df.index.max()) + 0.5
+    _ZOOM = 0.62  # fraction to shrink/expand the visible span per click
+
+    if "ov_range" not in st.session_state:
+        st.session_state["ov_range"] = [_x0, _x1]
+
+    def _ov_in():
+        lo, hi = st.session_state["ov_range"]
+        mid = (lo + hi) / 2
+        half = (hi - lo) * _ZOOM / 2
+        st.session_state["ov_range"] = [mid - half, mid + half]
+
+    def _ov_out():
+        lo, hi = st.session_state["ov_range"]
+        mid = (lo + hi) / 2
+        half = (hi - lo) / _ZOOM / 2
+        new_lo = max(mid - half, _x0)
+        new_hi = min(mid + half, _x1)
+        if new_hi - new_lo >= (_x1 - _x0) - 0.01:
+            new_lo, new_hi = _x0, _x1
+        st.session_state["ov_range"] = [new_lo, new_hi]
+
+    def _ov_reset():
+        st.session_state["ov_range"] = [_x0, _x1]
+
+    # ── Zoom buttons centered above the chart ─────────────────────────────────
+    _, _bc1, _bc2, _bc3, _ = st.columns([5, 1, 1, 1, 5])
+    _bc1.button("−", key="ov_zo",  on_click=_ov_out,   use_container_width=True, help="Zoom out")
+    _bc2.button("↺", key="ov_rst", on_click=_ov_reset, use_container_width=True, help="Reset view")
+    _bc3.button("+", key="ov_zi",  on_click=_ov_in,    use_container_width=True, help="Zoom in")
+
+    # ── Production + acres collapse chart ─────────────────────────────────────
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(go.Bar(
@@ -394,6 +410,7 @@ with tab1:
         hovertemplate="%{y:.3f}<extra></extra>",
     ), secondary_y=True)
 
+    ov_lo, ov_hi = st.session_state["ov_range"]
     fig.update_layout(
         **PLOTLY_LAYOUT,
         title="Florida Citrus: 20-year collapse in production, groves, and grove health",
@@ -403,11 +420,9 @@ with tab1:
                      tickfont=dict(color=ORANGE), gridcolor="rgba(255,255,255,0.05)")
     fig.update_yaxes(title_text="Bearing Acres (K) / NDVI×Acres", secondary_y=True,
                      tickfont=dict(color=BLUE), showgrid=False)
-    # Lock outer x bounds — zoom-out button can't exceed the initial full-data view
-    _x0, _x1 = df.index.min() - 0.5, df.index.max() + 0.5
-    fig.update_xaxes(range=[_x0, _x1], minallowed=_x0, maxallowed=_x1)
+    fig.update_xaxes(range=[ov_lo, ov_hi], minallowed=_x0, maxallowed=_x1)
 
-    st.plotly_chart(fig, use_container_width=True, config=OVERVIEW_CONFIG)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     st.markdown(
         f'<p style="font-weight:700;margin-bottom:6px">How Starvest works:</p>'
