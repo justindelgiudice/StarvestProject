@@ -364,6 +364,9 @@ with tab1:
                      tickfont=dict(color=ORANGE), gridcolor="rgba(255,255,255,0.05)")
     fig.update_yaxes(title_text="Bearing Acres (K) / NDVI×Acres", secondary_y=True,
                      tickfont=dict(color=BLUE), showgrid=False)
+    # Lock outer x bounds to the full data range so scroll-out stops at start position
+    _x0, _x1 = df.index.min() - 0.5, df.index.max() + 0.5
+    fig.update_xaxes(range=[_x0, _x1], minallowed=_x0, maxallowed=_x1)
 
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
