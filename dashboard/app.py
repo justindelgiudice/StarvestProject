@@ -128,7 +128,21 @@ PLOTLY_LAYOUT = dict(
     ),
 )
 
-PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": False}
+# Minimal modebar — zoom-in / zoom-out / reset axes; no scroll, no pan/lasso/save.
+# displayModeBar="hover" keeps it invisible until the user mouses over the chart.
+_MODEBAR_REMOVE = [
+    "pan2d", "select2d", "lasso2d", "autoScale2d",
+    "hoverClosestCartesian", "hoverCompareCartesian",
+    "toggleSpikelines", "toImage",
+]
+PLOTLY_CONFIG = {
+    "scrollZoom": False,
+    "displayModeBar": "hover",
+    "modeBarButtonsToRemove": _MODEBAR_REMOVE,
+    "displaylogo": False,
+}
+# For non-cartesian charts (gauge / indicator) that have no meaningful zoom controls.
+PLOTLY_CONFIG_STATIC = {"scrollZoom": False, "displayModeBar": False}
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -180,6 +194,10 @@ latest_year = df.index.max()
 latest      = df.loc[latest_year]
 bt0         = df[df["correct"].notna()].copy()
 hit0        = bt0["correct"].sum() / len(bt0) if len(bt0) else 0
+
+# Shared x-axis bounds — prevents zooming into empty space beyond data range.
+_X_MIN = float(df.index.min()) - 0.5
+_X_MAX = float(df.index.max()) + 0.5
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -348,38 +366,7 @@ with tab1:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Zoom state ────────────────────────────────────────────────────────────
-    _x0 = float(df.index.min()) - 0.5
-    _x1 = float(df.index.max()) + 0.5
-    _ZOOM = 0.62  # fraction to shrink/expand the visible span per click
-
-    if "ov_range" not in st.session_state:
-        st.session_state["ov_range"] = [_x0, _x1]
-
-    def _ov_in():
-        lo, hi = st.session_state["ov_range"]
-        mid = (lo + hi) / 2
-        half = (hi - lo) * _ZOOM / 2
-        st.session_state["ov_range"] = [mid - half, mid + half]
-
-    def _ov_out():
-        lo, hi = st.session_state["ov_range"]
-        mid = (lo + hi) / 2
-        half = (hi - lo) / _ZOOM / 2
-        new_lo = max(mid - half, _x0)
-        new_hi = min(mid + half, _x1)
-        if new_hi - new_lo >= (_x1 - _x0) - 0.01:
-            new_lo, new_hi = _x0, _x1
-        st.session_state["ov_range"] = [new_lo, new_hi]
-
-    def _ov_reset():
-        st.session_state["ov_range"] = [_x0, _x1]
-
-    # ── Zoom buttons centered above the chart ─────────────────────────────────
-    _, _bc1, _bc2, _bc3, _ = st.columns([5, 1, 1, 1, 5])
-    _bc1.button("−", key="ov_zo",  on_click=_ov_out,   use_container_width=True, help="Zoom out")
-    _bc2.button("↺", key="ov_rst", on_click=_ov_reset, use_container_width=True, help="Reset view")
-    _bc3.button("+", key="ov_zi",  on_click=_ov_in,    use_container_width=True, help="Zoom in")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
     # ── Production + acres collapse chart ─────────────────────────────────────
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -409,7 +396,6 @@ with tab1:
         hovertemplate="%{y:.3f}<extra></extra>",
     ), secondary_y=True)
 
-    ov_lo, ov_hi = st.session_state["ov_range"]
     fig.update_layout(
         **PLOTLY_LAYOUT,
         title="Florida Citrus: 20-year collapse in production, groves, and grove health",
@@ -419,9 +405,9 @@ with tab1:
                      tickfont=dict(color=ORANGE), gridcolor="rgba(255,255,255,0.05)")
     fig.update_yaxes(title_text="Bearing Acres (K) / NDVI×Acres", secondary_y=True,
                      tickfont=dict(color=BLUE), showgrid=False)
-    fig.update_xaxes(range=[ov_lo, ov_hi], minallowed=_x0, maxallowed=_x1)
+    fig.update_xaxes(minallowed=_X_MIN, maxallowed=_X_MAX)
 
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     st.markdown(
         f'<p style="font-weight:700;margin-bottom:6px">How Starvest works:</p>'
@@ -532,6 +518,7 @@ with tab2:
     )
     for row in [1, 2, 3]:
         fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=row, col=1)
+    fig.update_xaxes(minallowed=_X_MIN, maxallowed=_X_MAX)
 
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
@@ -619,6 +606,7 @@ with tab3:
         height=540,
     )
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=2, col=1)
+    fig.update_xaxes(minallowed=_X_MIN, maxallowed=_X_MAX)
 
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
@@ -713,6 +701,7 @@ with tab4:
 
     fig.update_layout(**PLOTLY_LAYOUT, height=340)
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=1, col=1)
+    fig.update_xaxes(minallowed=_X_MIN, maxallowed=_X_MAX, row=1, col=1)
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     # ── Signal Confirmation Filters ────────────────────────────────────────────
@@ -1004,7 +993,7 @@ with tab5:
     ))
     fig.update_layout(**PLOTLY_LAYOUT, height=300)
     fig.update_layout(margin=dict(l=40, r=40, t=60, b=20))
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG_STATIC)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 6 · GLOSSARY
