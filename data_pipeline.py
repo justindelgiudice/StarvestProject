@@ -1,10 +1,11 @@
 """
 Starvest Data Pipeline
 ======================
-Pulls three datasets and merges them into a single CSV:
+Pulls four datasets and merges them into a single CSV:
   1. MODIS NDVI (Jan-Mar average) via Google Earth Engine
   2. Florida orange production + bearing acreage via USDA NASS API
   3. OJ futures April/September close price via yfinance
+  4. FL citrus-belt hard freeze flag (Jan-Mar) via Open-Meteo archive
 
 Output: starvest_data.csv with one row per year (2005-2025)
 
@@ -46,7 +47,7 @@ def get_ndvi_time_series():
     Returns {year: mean_ndvi} for Jan-Mar of each year.
     Uses MODIS MOD13Q1 16-day composite at 250m over FL citrus belt.
     """
-    print("\n[1/3] Fetching MODIS NDVI from Google Earth Engine...")
+    print("\n[1/4] Fetching MODIS NDVI from Google Earth Engine...")
 
     if not GEE_PROJECT:
         print("  SKIPPED: set GEE_PROJECT=<your-cloud-project> in .env")
@@ -105,7 +106,7 @@ def get_nass_data():
     Production in boxes (e.g. 149_800_000), acreage in acres (e.g. 541_800).
     Only final-actual rows are used (reference_period_desc == "YEAR").
     """
-    print("\n[2/3] Fetching USDA NASS data...")
+    print("\n[2/4] Fetching USDA NASS data...")
 
     if not NASS_API_KEY:
         print("  ERROR: NASS_API_KEY not found in .env")
@@ -191,7 +192,7 @@ def get_oj_prices():
     Returns {year: {apr_close, sep_close, price_direction}}
     Uses daily data aggregated to monthly means for better coverage.
     """
-    print("\n[3/3] Fetching OJ futures from yfinance...")
+    print("\n[3/4] Fetching OJ futures from yfinance...")
 
     try:
         oj = yf.Ticker("OJ=F")
@@ -237,18 +238,110 @@ def get_oj_prices():
         return {}
 
 
-# ── 4. Merge & Compute Yield Surprise Signal ──────────────────────────────────
+# ── 4. FL Citrus-Belt Hard Freeze Flag via Open-Meteo ────────────────────────
 
-def build_dataset(ndvi: dict, nass: dict, oj: dict) -> pd.DataFrame:
+# Hard freeze threshold for citrus damage (standard USDA/NASS definition)
+HARD_FREEZE_F = 28.0  # °F
+
+# Five monitoring points spanning the FL citrus belt
+BELT_POINTS = [
+    (27.9, -81.7),  # Polk County (largest citrus county)
+    (27.5, -81.3),  # Highlands County
+    (27.6, -80.5),  # Indian River County
+    (27.4, -80.4),  # St. Lucie County
+    (26.6, -81.4),  # Hendry County (southern belt)
+]
+
+
+def get_freeze_data() -> dict:
     """
-    Merges all three sources and computes:
-      ndvi_3yr_avg   – rolling 3-year NDVI baseline (excludes current year)
-      ndvi_surprise  – current NDVI minus 3yr avg
-      yield_yoy_pct  – YoY % change in production
-      acres_norm     – bearing acres relative to 2005 baseline
-      ndvi_x_acres   – NDVI weighted by grove health proxy
+    Returns {year: {freeze_flag, freeze_days, min_temp_janmar_f}} for each year.
+
+    freeze_flag        – 1 if any belt point hit ≤ 28°F on any Jan-Mar day, else 0
+    freeze_days        – number of days where belt minimum ≤ 28°F
+    min_temp_janmar_f  – coldest single reading across belt and period
+
+    Source: Open-Meteo Historical Archive (free, no API key).
+    Batches the full date range into one request per monitoring point (5 total).
     """
-    print("\n[4/4] Merging datasets and computing signals...")
+    print("\n[4/4] Fetching hard freeze data from Open-Meteo historical archive...")
+
+    from collections import defaultdict
+
+    # date_str → coldest tmin across all belt points that day
+    belt_daily_min: dict[str, float] = defaultdict(lambda: float("inf"))
+
+    for lat, lon in BELT_POINTS:
+        try:
+            r = requests.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params={
+                    "latitude":         lat,
+                    "longitude":        lon,
+                    "start_date":       f"{START_YEAR}-01-01",
+                    "end_date":         f"{END_YEAR}-03-31",
+                    "daily":            "temperature_2m_min",
+                    "temperature_unit": "fahrenheit",
+                    "timezone":         "America/New_York",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            payload = r.json()
+            for date_str, tmin in zip(
+                payload["daily"]["time"],
+                payload["daily"]["temperature_2m_min"],
+            ):
+                if tmin is not None:
+                    belt_daily_min[date_str] = min(belt_daily_min[date_str], tmin)
+            print(f"  Fetched ({lat}, {lon})")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"  Open-Meteo error ({lat}, {lon}): {e}")
+
+    if not belt_daily_min:
+        print("  ERROR: No data retrieved — check network or Open-Meteo availability")
+        return {}
+
+    results = {}
+    for year in range(START_YEAR, END_YEAR + 1):
+        # Keep only Jan-Mar dates for this year
+        year_days = {
+            d: t for d, t in belt_daily_min.items()
+            if d[:4] == str(year) and d[5:7] in ("01", "02", "03")
+        }
+        if not year_days:
+            results[year] = {"freeze_flag": None, "freeze_days": None, "min_temp_janmar_f": None}
+            continue
+
+        min_temp    = min(year_days.values())
+        freeze_days = sum(1 for t in year_days.values() if t <= HARD_FREEZE_F)
+        results[year] = {
+            "freeze_flag":       1 if min_temp <= HARD_FREEZE_F else 0,
+            "freeze_days":       freeze_days,
+            "min_temp_janmar_f": round(min_temp, 1),
+        }
+        marker = "❄ FREEZE" if min_temp <= HARD_FREEZE_F else "— no freeze"
+        print(f"  {year}: min={min_temp:.1f}°F, {freeze_days} freeze day(s) → {marker}")
+
+    return results
+
+
+# ── 5. Merge & Compute Yield Surprise Signal ──────────────────────────────────
+
+def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict) -> pd.DataFrame:
+    """
+    Merges all four sources and computes:
+      ndvi_3yr_avg       – rolling 3-year NDVI baseline (excludes current year)
+      ndvi_surprise      – current NDVI minus 3yr avg
+      yield_yoy_pct      – YoY % change in production
+      acres_norm         – bearing acres relative to 2005 baseline
+      ndvi_x_acres       – NDVI weighted by grove health proxy
+      freeze_flag        – 1 if hard freeze (≤28°F) in Jan-Mar citrus belt
+      freeze_days        – count of hard-freeze days in Jan-Mar
+      min_temp_janmar_f  – coldest belt temperature in Jan-Mar (°F)
+    """
+    print("\n[5/5] Merging datasets and computing signals...")
 
     rows = []
     for year in range(START_YEAR, END_YEAR + 1):
@@ -263,6 +356,11 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict) -> pd.DataFrame:
         row["apr_close"]       = oj_year.get("apr_close")
         row["sep_close"]       = oj_year.get("sep_close")
         row["price_direction"] = oj_year.get("price_direction")
+
+        freeze_year = freeze.get(year, {})
+        row["freeze_flag"]       = freeze_year.get("freeze_flag")
+        row["freeze_days"]       = freeze_year.get("freeze_days")
+        row["min_temp_janmar_f"] = freeze_year.get("min_temp_janmar_f")
 
         rows.append(row)
 
@@ -296,14 +394,15 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict) -> pd.DataFrame:
 def main():
     print("=" * 55)
     print("  STARVEST DATA PIPELINE")
-    print("  Pulling 2005-2025 | MODIS + NASS + OJ Futures")
+    print("  Pulling 2005-2025 | MODIS + NASS + OJ Futures + Freeze")
     print("=" * 55)
 
-    ndvi = get_ndvi_time_series()
-    nass = get_nass_data()
-    oj   = get_oj_prices()
+    ndvi   = get_ndvi_time_series()
+    nass   = get_nass_data()
+    oj     = get_oj_prices()
+    freeze = get_freeze_data()
 
-    df = build_dataset(ndvi, nass, oj)
+    df = build_dataset(ndvi, nass, oj, freeze)
 
     df.to_csv(OUTPUT_FILE)
     print(f"\nSaved to {OUTPUT_FILE}")
@@ -313,7 +412,8 @@ def main():
 
     print("\nData completeness:")
     for col in ["ndvi_jan_mar", "production_boxes", "bearing_acres",
-                "apr_close", "sep_close", "price_direction"]:
+                "apr_close", "sep_close", "price_direction",
+                "freeze_flag", "freeze_days", "min_temp_janmar_f"]:
         n_valid = df[col].notna().sum()
         print(f"  {col}: {n_valid}/21 years")
 
