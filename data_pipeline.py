@@ -1,12 +1,13 @@
 """
 Starvest Data Pipeline
 ======================
-Pulls five datasets and merges them into a single CSV:
+Pulls six datasets and merges them into a single CSV:
   1. MODIS NDVI (Jan-Mar average) via Google Earth Engine
   2. Florida orange production + bearing acreage via USDA NASS API
   3. OJ futures April/September close price via yfinance
   4. FL citrus-belt hard freeze flag (Jan-Mar) via NOAA GHCN-Daily
   5. Brazil orange production via USDA FAS PSD bulk download
+  6. FL citrus-belt Jan-Mar rainfall via NOAA GHCN-Daily (PRCP element)
 
 Output: starvest_data.csv with one row per year (2005-2025)
 
@@ -350,7 +351,110 @@ def get_freeze_data() -> dict:
     return results
 
 
-# ── 5. Brazil Orange Production via USDA FAS PSD Bulk Download ───────────────
+# ── 5. FL Citrus-Belt Jan-Mar Rainfall via NOAA GHCN-Daily ───────────────────
+
+# Citrus belt COOP stations (Highlands County) preferred; airport stations fill gaps.
+# Same GHCN bulk endpoint used for freeze data — no API key required.
+# NOAA CDO token approach (ncdc.noaa.gov/cdo-web/token) also works but needs auth.
+RAINFALL_STATIONS_BELT     = {"USC00080228", "USC00087205"}  # Avon Park 2W + Sebring
+RAINFALL_STATIONS_FALLBACK = {"USW00012842", "USW00012815"}  # Tampa Intl + Orlando McCoy
+RAINFALL_STATIONS = {
+    "USC00080228": "Avon Park 2W, Highlands Co.",
+    "USC00087205": "Sebring, Highlands Co.",
+    "USW00012842": "Tampa Intl Airport (fallback)",
+    "USW00012815": "Orlando McCoy Airport (fallback)",
+}
+MIN_PRCP_DAYS = 45  # require at least 45 obs per Jan-Mar period (~50%)
+
+
+def get_rainfall_data() -> dict:
+    """
+    Returns {year: fl_rainfall_jan_mar_inches} for 2005-2025.
+
+    Averages Jan-Mar daily PRCP across available citrus-belt COOP stations
+    (Avon Park 2W, Sebring). Falls back to airport stations for years where
+    both COOP stations have fewer than MIN_PRCP_DAYS observations.
+
+    GHCN-D PRCP values are in tenths of mm; converted here to inches.
+    """
+    print("\n[5/6] Fetching FL Jan-Mar rainfall from NOAA GHCN-Daily...")
+
+    # station_id -> {year: total_inches} for valid years
+    station_totals: dict[str, dict[int, float]] = {}
+
+    for station_id, label in RAINFALL_STATIONS.items():
+        url = f"{GHCN_BASE}/{station_id}.csv.gz"
+        try:
+            r = requests.get(url, timeout=60)
+            r.raise_for_status()
+
+            df_st = pd.read_csv(
+                io.BytesIO(r.content),
+                compression="gzip",
+                header=None,
+                low_memory=False,
+                names=["station", "date", "element", "value",
+                       "mflag", "qflag", "sflag", "obs_time"],
+                dtype={"date": str, "value": "float64"},
+            )
+
+            prcp = df_st[
+                (df_st["element"] == "PRCP") &
+                (df_st["qflag"].isna() | (df_st["qflag"].str.strip() == ""))
+            ].copy()
+
+            prcp["year"]  = prcp["date"].str[:4].astype(int)
+            prcp["month"] = prcp["date"].str[4:6]
+            janmar = prcp[
+                prcp["year"].between(START_YEAR, END_YEAR) &
+                prcp["month"].isin(["01", "02", "03"])
+            ]
+
+            day_counts = janmar.groupby("year").size()
+            totals_raw = janmar.groupby("year")["value"].sum()  # tenths of mm
+            # Convert to inches; only keep years with enough obs
+            year_totals = {}
+            for yr in totals_raw.index:
+                if day_counts[yr] >= MIN_PRCP_DAYS:
+                    year_totals[yr] = round(totals_raw[yr] / 10 / 25.4, 2)
+            station_totals[station_id] = year_totals
+
+            n_valid = len(year_totals)
+            print(f"  {label}: {n_valid}/21 years with ≥{MIN_PRCP_DAYS} obs")
+
+        except Exception as e:
+            print(f"  {label} ({station_id}): error — {e}")
+            station_totals[station_id] = {}
+
+    # Merge: average belt stations; fill missing years from fallback average
+    results = {}
+    for year in range(START_YEAR, END_YEAR + 1):
+        belt_vals = [
+            station_totals[s][year]
+            for s in RAINFALL_STATIONS_BELT
+            if year in station_totals.get(s, {})
+        ]
+        if belt_vals:
+            results[year] = round(sum(belt_vals) / len(belt_vals), 2)
+        else:
+            fb_vals = [
+                station_totals[s][year]
+                for s in RAINFALL_STATIONS_FALLBACK
+                if year in station_totals.get(s, {})
+            ]
+            if fb_vals:
+                results[year] = round(sum(fb_vals) / len(fb_vals), 2)
+
+        if year in results:
+            src = "belt" if belt_vals else "fallback"
+            print(f"  {year}: {results[year]:.2f} in ({src})")
+        else:
+            print(f"  {year}: NO DATA")
+
+    return results
+
+
+# ── 6. Brazil Orange Production via USDA FAS PSD Bulk Download ───────────────
 
 FAS_BULK_URL = "https://apps.fas.usda.gov/psdonline/downloads/psd_alldata_csv.zip"
 
@@ -411,21 +515,25 @@ def get_brazil_orange_production() -> dict:
 
 # ── 6. Merge & Compute Yield Surprise Signal ──────────────────────────────────
 
-def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict) -> pd.DataFrame:
+def build_dataset(
+    ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict, rainfall: dict
+) -> pd.DataFrame:
     """
-    Merges all five sources and computes:
-      ndvi_3yr_avg         – rolling 3-year NDVI baseline (excludes current year)
-      ndvi_surprise        – current NDVI minus 3yr avg
-      yield_yoy_pct        – YoY % change in FL production
-      acres_norm           – bearing acres relative to 2005 baseline
-      ndvi_x_acres         – NDVI weighted by grove health proxy
-      freeze_flag          – 1 if hard freeze (≤30°F) in Jan-Mar citrus belt
-      freeze_days          – count of hard-freeze days in Jan-Mar
-      min_temp_janmar_f    – coldest belt temperature in Jan-Mar (°F)
-      brazil_production_mt – Brazil annual orange production in metric tons (USDA FAS)
-      brazil_yoy_pct       – YoY % change in Brazil production
+    Merges all six sources and computes:
+      ndvi_3yr_avg              – rolling 3-year NDVI baseline (excludes current year)
+      ndvi_surprise             – current NDVI minus 3yr avg
+      yield_yoy_pct             – YoY % change in FL production
+      acres_norm                – bearing acres relative to 2005 baseline
+      ndvi_x_acres              – NDVI weighted by grove health proxy
+      freeze_flag               – 1 if hard freeze (≤30°F) in Jan-Mar citrus belt
+      freeze_days               – count of hard-freeze days in Jan-Mar
+      min_temp_janmar_f         – coldest belt temperature in Jan-Mar (°F)
+      brazil_production_mt      – Brazil annual orange production in MT (USDA FAS)
+      brazil_yoy_pct            – YoY % change in Brazil production
+      fl_rainfall_jan_mar_inches – FL citrus belt Jan-Mar total precipitation (in)
+      fl_rainfall_below_avg     – 1 if that year's rainfall < long-term mean, else 0
     """
-    print("\n[6/6] Merging datasets and computing signals...")
+    print("\n[7/7] Merging datasets and computing signals...")
 
     rows = []
     for year in range(START_YEAR, END_YEAR + 1):
@@ -446,7 +554,8 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict) 
         row["freeze_days"]       = freeze_year.get("freeze_days")
         row["min_temp_janmar_f"] = freeze_year.get("min_temp_janmar_f")
 
-        row["brazil_production_mt"] = brazil.get(year)
+        row["brazil_production_mt"]       = brazil.get(year)
+        row["fl_rainfall_jan_mar_inches"] = rainfall.get(year)
 
         rows.append(row)
 
@@ -468,6 +577,11 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict) 
         df["brazil_production_mt"].pct_change().mul(100).round(2)
     )
 
+    rain_mean = df["fl_rainfall_jan_mar_inches"].mean(skipna=True)
+    df["fl_rainfall_below_avg"] = df["fl_rainfall_jan_mar_inches"].apply(
+        lambda x: (1 if x < rain_mean else 0) if pd.notna(x) else None
+    )
+
     if df["bearing_acres"].notna().any():
         baseline = df["bearing_acres"].iloc[0]
         df["acres_norm"]    = (df["bearing_acres"] / baseline).round(4)
@@ -482,30 +596,32 @@ def build_dataset(ndvi: dict, nass: dict, oj: dict, freeze: dict, brazil: dict) 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print("=" * 55)
+    print("=" * 60)
     print("  STARVEST DATA PIPELINE")
-    print("  Pulling 2005-2025 | MODIS + NASS + OJ Futures + Freeze + Brazil FAS")
-    print("=" * 55)
+    print("  2005-2025 | MODIS + NASS + OJ + Freeze + Brazil FAS + FL Rainfall")
+    print("=" * 60)
 
-    ndvi   = get_ndvi_time_series()
-    nass   = get_nass_data()
-    oj     = get_oj_prices()
-    freeze = get_freeze_data()
-    brazil = get_brazil_orange_production()
+    ndvi     = get_ndvi_time_series()
+    nass     = get_nass_data()
+    oj       = get_oj_prices()
+    freeze   = get_freeze_data()
+    brazil   = get_brazil_orange_production()
+    rainfall = get_rainfall_data()
 
-    df = build_dataset(ndvi, nass, oj, freeze, brazil)
+    df = build_dataset(ndvi, nass, oj, freeze, brazil, rainfall)
 
     df.to_csv(OUTPUT_FILE)
     print(f"\nSaved to {OUTPUT_FILE}")
-    print(f"\n{'='*55}")
+    print(f"\n{'='*60}")
     print(df.to_string())
-    print(f"{'='*55}")
+    print(f"{'='*60}")
 
     print("\nData completeness:")
     for col in ["ndvi_jan_mar", "production_boxes", "bearing_acres",
                 "apr_close", "sep_close", "price_direction",
                 "freeze_flag", "freeze_days", "min_temp_janmar_f",
-                "brazil_production_mt", "brazil_yoy_pct"]:
+                "brazil_production_mt", "brazil_yoy_pct",
+                "fl_rainfall_jan_mar_inches", "fl_rainfall_below_avg"]:
         n_valid = df[col].notna().sum()
         print(f"  {col}: {n_valid}/21 years")
 

@@ -715,128 +715,132 @@ with tab4:
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=1, col=1)
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-    # ── Brazil Confirmation Filter ─────────────────────────────────────────────
-    has_brazil = "brazil_yoy_pct" in dft.columns and dft["brazil_yoy_pct"].notna().any()
+    # ── Signal Confirmation Filters ────────────────────────────────────────────
+    has_brazil   = "brazil_yoy_pct" in dft.columns and dft["brazil_yoy_pct"].notna().any()
+    has_rainfall = "fl_rainfall_below_avg" in dft.columns and dft["fl_rainfall_below_avg"].notna().any()
 
     if has_brazil:
-        st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:24px 0'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:28px 0'>", unsafe_allow_html=True)
         st.markdown(
-            f'<div style="font-size:15px;font-weight:700;margin-bottom:4px">'
-            f'Brazil Confirmation Filter'
-            f'</div>'
-            f'<div style="font-size:12px;color:#64748b;margin-bottom:16px">'
-            f'Only count a LONG signal when Brazil production is also <b style="color:#E2E8F0">down</b> YoY '
-            f'(global supply tightening). Only count a SHORT signal when Brazil is also '
-            f'<b style="color:#E2E8F0">up</b> YoY (global supply rising). '
-            f'Source: USDA FAS PSD bulk data — Oranges, Fresh, Brazil.'
-            f'</div>',
+            '<div style="font-size:15px;font-weight:700;margin-bottom:4px">'
+            'Signal Confirmation Filters</div>'
+            '<div style="font-size:12px;color:#64748b;margin-bottom:18px;line-height:1.6">'
+            'Each tier adds a macro confirmation layer on top of the NDVI signal. '
+            '<b style="color:#94A3B8">Brazil:</b> LONG valid only when Brazilian production also '
+            'fell YoY (global tightening); SHORT valid only when Brazil rose YoY. '
+            '<b style="color:#94A3B8">Dry Jan-Mar (LONG only):</b> additionally requires FL citrus-belt '
+            'rainfall was below the 2005-2025 mean of 6.26 in — drought compounds NDVI stress. '
+            'Sources: USDA FAS PSD · NOAA GHCN-Daily (Avon Park 2W + Sebring).'
+            '</div>',
             unsafe_allow_html=True,
         )
 
-        # Brazil-confirmed subset of signal years
+        # Tier 2 — Brazil confirmed
         brazil_mask = (
             ((dft["signal"] == "LONG")  & (dft["brazil_yoy_pct"] < 0)) |
             ((dft["signal"] == "SHORT") & (dft["brazil_yoy_pct"] > 0))
         )
-        bt_braz   = dft[brazil_mask & dft["correct"].notna()].copy()
-        n_ok_b    = int(bt_braz["correct"].sum())
-        n_tot_b   = len(bt_braz)
-        hit_b     = n_ok_b / n_tot_b if n_tot_b else 0
-        pnl_b     = bt_braz["trade_ret"].sum()
-        coverage  = n_tot_b / n_tot if n_tot else 0
+        bt2     = dft[brazil_mask & dft["correct"].notna()].copy()
+        n_ok2   = int(bt2["correct"].sum())
+        n_tot2  = len(bt2)
+        hit2    = n_ok2 / n_tot2 if n_tot2 else 0
+        pnl2    = bt2["trade_ret"].sum()
 
-        delta_hit = hit_b - hit
-        delta_txt = f"{delta_hit:+.0%}"
+        # Tier 3 — Brazil + Dry Jan-Mar (LONG only; SHORT keeps Brazil-only requirement)
+        if has_rainfall:
+            rain_mask = (
+                ((dft["signal"] == "LONG")  & (dft["brazil_yoy_pct"] < 0) & (dft["fl_rainfall_below_avg"] == 1)) |
+                ((dft["signal"] == "SHORT") & (dft["brazil_yoy_pct"] > 0))
+            )
+            bt3    = dft[rain_mask & dft["correct"].notna()].copy()
+            n_ok3  = int(bt3["correct"].sum())
+            n_tot3 = len(bt3)
+            hit3   = n_ok3 / n_tot3 if n_tot3 else 0
+            pnl3   = bt3["trade_ret"].sum()
 
-        _c1, _c2, _c3, _c4 = st.columns(4)
+        # ── 3-tier comparison cards ──────────────────────────────────────────
+        _tier_cols = st.columns(3)
 
-        _c1.markdown(
-            f'<div class="card">'
-            f'<div class="card-label">Hit Rate</div>'
-            f'<div style="margin-top:6px">'
-            f'<div style="font-size:13px;color:#64748b">No filter: '
-            f'<span style="color:#E2E8F0;font-weight:600">{hit:.0%}</span></div>'
-            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
-            f'<span style="color:{GREEN if hit_b >= hit else RED};font-weight:700">{hit_b:.0%}</span>'
-            f'<span style="font-size:11px;color:{GREEN if hit_b >= hit else RED};margin-left:5px">'
-            f'({delta_txt})</span></div>'
-            f'</div></div>',
-            unsafe_allow_html=True,
+        def _tier_card(col, title, subtitle, hit_val, ok, tot, pnl_val, tier_color):
+            delta_vs1 = hit_val - hit
+            delta_col = GREEN if delta_vs1 >= 0 else RED
+            col.markdown(
+                f'<div class="card" style="border-top:3px solid {tier_color};padding-top:14px">'
+                f'<div class="card-label" style="color:{tier_color};text-transform:uppercase;'
+                f'letter-spacing:1px;font-size:10px">{title}</div>'
+                f'<div style="font-size:11px;color:#64748b;margin-bottom:8px">{subtitle}</div>'
+                f'<div style="font-size:2rem;font-weight:800;color:{GREEN if hit_val >= 0.55 else RED};'
+                f'line-height:1;margin-bottom:4px">{hit_val:.0%}</div>'
+                f'<div style="font-size:11px;color:#64748b">'
+                f'{ok}/{tot} years correct'
+                f'<span style="color:{delta_col};margin-left:6px">'
+                f'({delta_vs1:+.0%} vs baseline)</span></div>'
+                f'<div style="font-size:12px;color:{GREEN if pnl_val >= 0 else RED};margin-top:6px">'
+                f'Cum P&amp;L: {pnl_val:+.1f}%</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        _tier_card(
+            _tier_cols[0],
+            "Tier 1 — NDVI Signal",
+            "All signal years, no extra filters",
+            hit, n_ok, n_tot, cum_pnl,
+            GRAY,
         )
-        _c2.markdown(
-            f'<div class="card">'
-            f'<div class="card-label">Years (confirmed)</div>'
-            f'<div style="margin-top:6px">'
-            f'<div style="font-size:13px;color:#64748b">No filter: '
-            f'<span style="color:#E2E8F0;font-weight:600">{n_ok}/{n_tot}</span></div>'
-            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
-            f'<span style="color:#E2E8F0;font-weight:700">{n_ok_b}/{n_tot_b}</span>'
-            f'<span style="font-size:11px;color:#64748b;margin-left:5px">'
-            f'({coverage:.0%} of signals)</span></div>'
-            f'</div></div>',
-            unsafe_allow_html=True,
+        _tier_card(
+            _tier_cols[1],
+            "Tier 2 — + Brazil",
+            "LONG: Brazil ↓ YoY · SHORT: Brazil ↑ YoY",
+            hit2, n_ok2, n_tot2, pnl2,
+            GOLD,
         )
-        _c3.markdown(
-            f'<div class="card">'
-            f'<div class="card-label">Cum P&amp;L (confirmed)</div>'
-            f'<div style="margin-top:6px">'
-            f'<div style="font-size:13px;color:#64748b">No filter: '
-            f'<span style="color:{GREEN if cum_pnl >= 0 else RED};font-weight:600">{cum_pnl:+.1f}%</span></div>'
-            f'<div style="font-size:13px;color:#64748b;margin-top:3px">+Brazil:&nbsp;&nbsp; '
-            f'<span style="color:{GREEN if pnl_b >= 0 else RED};font-weight:700">{pnl_b:+.1f}%</span>'
-            f'</div></div></div>',
-            unsafe_allow_html=True,
-        )
-        _c4.markdown(
-            f'<div class="card">'
-            f'<div class="card-label">Brazil filter signal</div>'
-            f'<div style="font-size:11px;color:#64748b;margin-top:6px;line-height:1.5">'
-            f'LONG requires Brazil ↓ YoY<br>'
-            f'SHORT requires Brazil ↑ YoY<br>'
-            f'<span style="color:#94A3B8">Filters out mismatched years</span>'
-            f'</div></div>',
-            unsafe_allow_html=True,
-        )
+        if has_rainfall:
+            _tier_card(
+                _tier_cols[2],
+                "Tier 3 — + Brazil + Dry Jan-Mar",
+                "Tier 2 + LONG requires FL rainfall < avg",
+                hit3, n_ok3, n_tot3, pnl3,
+                BLUE,
+            )
 
     # ── Year-by-year table ────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Year-by-year breakdown**")
     display_df = dft[dft["signal"].notna() & (dft["signal"] != "NEUTRAL")].copy()
 
-    # Add Brazil confirmation column if data is available
     if has_brazil:
-        display_df["brazil_yoy_pct_show"] = display_df["brazil_yoy_pct"]
-        display_df["Brazil OK"] = display_df.apply(
+        display_df["Brazil"] = display_df.apply(
             lambda r: "✓" if (
                 (r["signal"] == "LONG"  and pd.notna(r["brazil_yoy_pct"]) and r["brazil_yoy_pct"] < 0) or
                 (r["signal"] == "SHORT" and pd.notna(r["brazil_yoy_pct"]) and r["brazil_yoy_pct"] > 0)
             ) else ("—" if pd.isna(r["brazil_yoy_pct"]) else "✗"),
             axis=1,
         )
-        cols_show = ["ndvi_surprise", "signal", "Brazil OK", "apr_close", "sep_close",
-                     "price_direction", "correct", "trade_ret"]
-        rename_map = {
-            "ndvi_surprise":  "NDVI Surprise",
-            "signal":         "Signal",
-            "Brazil OK":      "Brazil ✓",
-            "apr_close":      "Apr Close (¢)",
-            "sep_close":      "Sep Close (¢)",
-            "price_direction":"Price Dir",
-            "correct":        "Correct",
-            "trade_ret":      "Return (%)",
-        }
-    else:
-        cols_show = ["ndvi_surprise", "signal", "apr_close", "sep_close",
-                     "price_direction", "correct", "trade_ret"]
-        rename_map = {
-            "ndvi_surprise":  "NDVI Surprise",
-            "signal":         "Signal",
-            "apr_close":      "Apr Close (¢)",
-            "sep_close":      "Sep Close (¢)",
-            "price_direction":"Price Dir",
-            "correct":        "Correct",
-            "trade_ret":      "Return (%)",
-        }
+    if has_rainfall:
+        display_df["Dry Jan-Mar"] = display_df.apply(
+            lambda r: (
+                "✓" if r["signal"] == "LONG" and r["fl_rainfall_below_avg"] == 1
+                else ("✗" if r["signal"] == "LONG" and r["fl_rainfall_below_avg"] == 0
+                else "—")  # SHORT: rainfall filter doesn't apply
+            ) if pd.notna(r.get("fl_rainfall_below_avg")) else "—",
+            axis=1,
+        )
+
+    cols_show   = ["ndvi_surprise", "signal"]
+    rename_map  = {"ndvi_surprise": "NDVI Surprise", "signal": "Signal"}
+    if has_brazil:
+        cols_show.append("Brazil")
+    if has_rainfall:
+        cols_show.append("Dry Jan-Mar")
+    cols_show  += ["apr_close", "sep_close", "price_direction", "correct", "trade_ret"]
+    rename_map.update({
+        "apr_close":       "Apr Close (¢)",
+        "sep_close":       "Sep Close (¢)",
+        "price_direction": "Price Dir",
+        "correct":         "Correct",
+        "trade_ret":       "Return (%)",
+    })
 
     display_df = display_df[cols_show].rename(columns=rename_map)
     display_df["Correct"] = display_df["Correct"].map({True: "✓", False: "✗"})
