@@ -127,7 +127,10 @@ PLOTLY_LAYOUT = dict(
         bordercolor="rgba(255,255,255,0.12)",
         font=dict(color="#E2E8F0", family="Inter, sans-serif", size=12),
     ),
+    dragmode=False,
 )
+
+PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": False}
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -202,11 +205,10 @@ div[data-testid="stTabs"] > div > div > div > button {
     font-size: 14px; padding: 10px 20px; font-weight: 600;
 }
 div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
-/* Remove Plotly crosshair cursor — keep default pointer */
+/* Scroll-zoom is enabled; keep pointer cursor (no crosshair) */
 .js-plotly-plot .nsewdrag,
 .js-plotly-plot .ewdrag,
-.js-plotly-plot .nsdrag,
-.js-plotly-plot .drag { cursor: default !important; }
+.js-plotly-plot .nsdrag { cursor: default !important; }
 /* ── Glossary tooltip ── */
 .tipwrap {
     position: relative; display: inline-block;
@@ -364,7 +366,7 @@ with tab1:
     fig.update_yaxes(title_text="Bearing Acres (K) / NDVI×Acres", secondary_y=True,
                      tickfont=dict(color=BLUE), showgrid=False)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     st.markdown(
         f'<p style="font-weight:700;margin-bottom:6px">How Starvest works:</p>'
@@ -475,7 +477,7 @@ with tab2:
     for row in [1, 2, 3]:
         fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=row, col=1)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -562,7 +564,7 @@ with tab3:
     )
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=2, col=1)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     # Key events annotation
     st.markdown("""
@@ -657,7 +659,7 @@ with tab4:
 
     fig.update_layout(**PLOTLY_LAYOUT, height=340)
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", row=1, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     # Year-by-year table
     st.markdown("**Year-by-year breakdown**")
@@ -836,7 +838,7 @@ with tab5:
     ))
     fig.update_layout(**PLOTLY_LAYOUT, height=300)
     fig.update_layout(margin=dict(l=40, r=40, t=60, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 6 · GLOSSARY
