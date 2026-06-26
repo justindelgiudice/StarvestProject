@@ -131,6 +131,20 @@ PLOTLY_LAYOUT = dict(
 
 PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": False}
 
+# Overview chart only: +/− buttons at top, no scroll zoom.
+# Removes every modebar entry except zoomIn2d, zoomOut2d, resetScale2d.
+OVERVIEW_CONFIG = {
+    "scrollZoom": False,
+    "displayModeBar": True,
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "zoom2d", "pan2d", "select2d", "lasso2d",
+        "autoScale2d", "toImage", "sendDataToCloud",
+        "hoverClosestCartesian", "hoverCompareCartesian",
+        "toggleSpikelines",
+    ],
+}
+
 # ── Data ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
 
@@ -204,10 +218,35 @@ div[data-testid="stTabs"] > div > div > div > button {
     font-size: 14px; padding: 10px 20px; font-weight: 600;
 }
 div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
-/* Scroll-zoom is enabled; keep pointer cursor (no crosshair) */
+/* Pointer cursor (no crosshair) */
 .js-plotly-plot .nsewdrag,
 .js-plotly-plot .ewdrag,
 .js-plotly-plot .nsdrag { cursor: default !important; }
+/* ── Overview zoom toolbar (only visible on the one chart that shows it) ── */
+.js-plotly-plot .modebar-container {
+    top: 6px !important; right: 8px !important;
+}
+.js-plotly-plot .modebar-group {
+    background: rgba(15,17,30,0.88) !important;
+    border: 1px solid rgba(255,255,255,0.11) !important;
+    border-radius: 7px !important;
+    padding: 3px 4px !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.45) !important;
+    display: flex !important; gap: 1px !important;
+}
+.js-plotly-plot .modebar-btn {
+    border-radius: 5px !important;
+    padding: 5px 7px !important;
+    opacity: 1 !important;
+}
+.js-plotly-plot .modebar-btn path {
+    fill: #64748b !important;
+    transition: fill 0.15s !important;
+}
+.js-plotly-plot .modebar-btn:hover {
+    background: rgba(96,165,250,0.13) !important;
+}
+.js-plotly-plot .modebar-btn:hover path { fill: #60A5FA !important; }
 /* ── Glossary tooltip ── */
 .tipwrap {
     position: relative; display: inline-block;
@@ -364,11 +403,11 @@ with tab1:
                      tickfont=dict(color=ORANGE), gridcolor="rgba(255,255,255,0.05)")
     fig.update_yaxes(title_text="Bearing Acres (K) / NDVI×Acres", secondary_y=True,
                      tickfont=dict(color=BLUE), showgrid=False)
-    # Lock outer x bounds to the full data range so scroll-out stops at start position
+    # Lock outer x bounds — zoom-out button can't exceed the initial full-data view
     _x0, _x1 = df.index.min() - 0.5, df.index.max() + 0.5
     fig.update_xaxes(range=[_x0, _x1], minallowed=_x0, maxallowed=_x1)
 
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    st.plotly_chart(fig, use_container_width=True, config=OVERVIEW_CONFIG)
 
     st.markdown(
         f'<p style="font-weight:700;margin-bottom:6px">How Starvest works:</p>'
