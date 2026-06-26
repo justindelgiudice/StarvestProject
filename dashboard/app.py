@@ -34,6 +34,12 @@ PLOTLY_LAYOUT = dict(
     font=dict(color="#E2E8F0", family="Inter, sans-serif"),
     margin=dict(l=10, r=10, t=40, b=10),
     legend=dict(bgcolor="rgba(30,33,48,0.7)", bordercolor="rgba(255,255,255,0.1)", borderwidth=1),
+    hovermode="x unified",
+    hoverlabel=dict(
+        bgcolor="rgba(15,17,30,0.95)",
+        bordercolor="rgba(255,255,255,0.12)",
+        font=dict(color="#E2E8F0", family="Inter, sans-serif", size=12),
+    ),
 )
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -109,6 +115,11 @@ div[data-testid="stTabs"] > div > div > div > button {
     font-size: 14px; padding: 10px 20px; font-weight: 600;
 }
 div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+/* Remove Plotly crosshair cursor — keep default pointer */
+.js-plotly-plot .nsewdrag,
+.js-plotly-plot .ewdrag,
+.js-plotly-plot .nsdrag,
+.js-plotly-plot .drag { cursor: default !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -196,23 +207,25 @@ with tab1:
         x=df.index, y=df["production_boxes"] / 1e6,
         name="Production (M boxes)",
         marker_color=ORANGE, opacity=0.75,
-        hovertemplate="%{x}: %{y:.1f}M boxes<extra></extra>",
+        hovertemplate="%{y:.1f}M boxes<extra></extra>",
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=df["bearing_acres"] / 1e3,
         name="Bearing Acres (K)",
         line=dict(color=BLUE, width=2.5),
-        mode="lines+markers", marker=dict(size=5),
-        hovertemplate="%{x}: %{y:.0f}K acres<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=6, symbol="circle", color=BLUE, line=dict(width=1.5, color="rgba(255,255,255,0.6)")),
+        hovertemplate="%{y:.0f}K acres<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=df["ndvi_x_acres"],
         name="NDVI × Acres (composite)",
         line=dict(color=PURPLE, width=2, dash="dot"),
-        mode="lines",
-        hovertemplate="%{x}: %{y:.3f}<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=5, symbol="circle", color=PURPLE, line=dict(width=1.5, color="rgba(255,255,255,0.5)")),
+        hovertemplate="%{y:.3f}<extra></extra>",
     ), secondary_y=True)
 
     fig.update_layout(
@@ -256,14 +269,17 @@ with tab2:
     fig.add_trace(go.Scatter(
         x=df.index, y=df["ndvi_jan_mar"],
         name="NDVI (Jan-Mar)", line=dict(color=GREEN, width=2.5),
-        mode="lines+markers", marker=dict(size=6),
-        hovertemplate="%{x}: NDVI=%{y:.4f}<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=7, symbol="circle", color=GREEN, line=dict(width=1.5, color="rgba(255,255,255,0.7)")),
+        hovertemplate="NDVI=%{y:.4f}<extra></extra>",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=df["ndvi_3yr_avg"],
         name="3-yr Rolling Avg", line=dict(color=GRAY, width=1.5, dash="dash"),
-        hovertemplate="%{x}: avg=%{y:.4f}<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=5, symbol="circle-open", color=GRAY, line=dict(width=1.5, color=GRAY)),
+        hovertemplate="avg=%{y:.4f}<extra></extra>",
     ), row=1, col=1)
 
     # shade the gap
@@ -285,7 +301,7 @@ with tab2:
         x=df.index, y=df["ndvi_surprise"],
         name="NDVI Surprise",
         marker_color=surprise_colors, opacity=0.85,
-        hovertemplate="%{x}: surprise=%{y:.4f}<extra></extra>",
+        hovertemplate="surprise=%{y:.4f}<extra></extra>",
     ), row=2, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=2, col=1)
 
@@ -294,7 +310,9 @@ with tab2:
         x=df.index, y=df["ndvi_x_acres"],
         name="NDVI × Acres", line=dict(color=PURPLE, width=2.5),
         fill="tozeroy", fillcolor="rgba(167,139,250,0.15)",
-        hovertemplate="%{x}: %{y:.4f}<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=6, symbol="circle", color=PURPLE, line=dict(width=1.5, color="rgba(255,255,255,0.6)")),
+        hovertemplate="%{y:.4f}<extra></extra>",
     ), row=3, col=1)
 
     fig.update_layout(
@@ -345,21 +363,23 @@ with tab3:
         x=df.index, y=df["production_boxes"] / 1e6,
         name="Production (M boxes)",
         marker_color=ORANGE, opacity=0.65,
-        hovertemplate="%{x}: %{y:.1f}M boxes<extra></extra>",
+        hovertemplate="%{y:.1f}M boxes<extra></extra>",
     ), row=1, col=1, secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=df["apr_close"],
         name="Apr Close (¢/lb)", line=dict(color=BLUE, width=2),
-        mode="lines+markers", marker=dict(size=5),
-        hovertemplate="%{x}: Apr=%{y:.1f}¢<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=6, symbol="circle", color=BLUE, line=dict(width=1.5, color="rgba(255,255,255,0.6)")),
+        hovertemplate="Apr=%{y:.1f}¢<extra></extra>",
     ), row=1, col=1, secondary_y=True)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=df["sep_close"],
         name="Sep Close (¢/lb)", line=dict(color=GOLD, width=2, dash="dash"),
-        mode="lines+markers", marker=dict(size=5),
-        hovertemplate="%{x}: Sep=%{y:.1f}¢<extra></extra>",
+        mode="lines+markers",
+        marker=dict(size=6, symbol="circle", color=GOLD, line=dict(width=1.5, color="rgba(255,255,255,0.6)")),
+        hovertemplate="Sep=%{y:.1f}¢<extra></extra>",
     ), row=1, col=1, secondary_y=True)
 
     # ── Row 2: yield YoY % bars ───────────────────────────────────────────────
@@ -370,7 +390,7 @@ with tab3:
     fig.add_trace(go.Bar(
         x=df.index, y=df["yield_yoy_pct"],
         name="Yield YoY %", marker_color=yoy_colors, opacity=0.85,
-        hovertemplate="%{x}: %{y:+.1f}%<extra></extra>",
+        hovertemplate="%{y:+.1f}%<extra></extra>",
     ), row=2, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=2, col=1)
 
@@ -458,9 +478,10 @@ with tab4:
         x=bt_sorted.index, y=bt_sorted["cum_pnl"],
         line=dict(color=BLUE, width=2.5),
         fill="tozeroy", fillcolor="rgba(96,165,250,0.12)",
-        mode="lines+markers", marker=dict(size=6, color=pnl_colors),
+        mode="lines+markers",
+        marker=dict(size=7, symbol="circle", color=pnl_colors, line=dict(width=1.5, color="rgba(255,255,255,0.6)")),
         name="Cum P&L",
-        hovertemplate="%{x}: %{y:+.1f}%<extra></extra>",
+        hovertemplate="%{y:+.1f}%<extra></extra>",
     ), row=1, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=1, col=1)
 
