@@ -192,7 +192,7 @@ df = compute_signals(raw, threshold=0.0)
 
 latest_year  = df.index.max()
 latest       = df.loc[latest_year]
-_rain_mean   = raw["fl_rainfall_jan_mar_inches"].mean()  # recomputed each run, includes all years
+_rain_mean   = raw["fl_rainfall_jan_mar_inches"].mean() if "fl_rainfall_jan_mar_inches" in raw.columns else None
 bt0         = df[df["correct"].notna()].copy()
 hit0        = bt0["correct"].sum() / len(bt0) if len(bt0) else 0
 
@@ -743,7 +743,7 @@ with tab4:
             '<b style="color:#94A3B8">Brazil:</b> LONG valid only when Brazilian production also '
             'fell YoY (global tightening); SHORT valid only when Brazil rose YoY. '
             '<b style="color:#94A3B8">Dry Jan-Mar (LONG only):</b> additionally requires FL citrus-belt '
-            f'rainfall was below the dataset mean of {_rain_mean:.2f} in — drought compounds NDVI stress. '
+            f'rainfall was below the dataset mean of {f"{_rain_mean:.2f} in" if _rain_mean is not None else "N/A"} — drought compounds NDVI stress. '
             'Sources: USDA FAS PSD · NOAA GHCN-Daily (Avon Park 2W + Sebring).'
             '</div>',
             unsafe_allow_html=True,
