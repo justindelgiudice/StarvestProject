@@ -665,9 +665,23 @@ with tab4:
 
     mini(m1, f"Hit Rate {tip('hit_rate')}", f"{hit:.0%}", GREEN if hit >= 0.55 else RED)
     mini(m2, "Years Tested", f"{n_ok}/{n_tot}", GRAY)
-    mini(m3, f"Cum P&L {tip('cum_pnl')}", f"{cum_pnl:+.1f}%", GREEN if cum_pnl >= 0 else RED)
+    m3.markdown(
+        f'<div class="card">'
+        f'<div class="card-label">Cum P&amp;L {tip("cum_pnl")}</div>'
+        f'<div class="card-value" style="font-size:22px;color:{GREEN if cum_pnl >= 0 else RED}">{cum_pnl:+.1f}%</div>'
+        f'<div style="font-size:10px;color:#64748b;margin-top:5px">total return over {n_tot} years, not annualized</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
     mini(m4, "Avg Win", f"{avg_win:+.1f}%", GREEN)
     mini(m5, "Avg Loss", f"{avg_los:+.1f}%", RED)
+
+    st.markdown(
+        f'<div style="color:#64748b;font-size:12px;margin-top:8px">'
+        f'{hit:.0%} directional accuracy &nbsp;·&nbsp; '
+        f'52–54% is typical for professional quant commodity signals</div>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -867,8 +881,23 @@ with tab5:
 
     left, right = st.columns([1, 1])
 
+    is_forward = correct is None and sig in ("LONG", "SHORT")
+
     sig_tip = tip("long_signal") if sig == "LONG" else (tip("short_signal") if sig == "SHORT" else "")
     with left:
+        if is_forward:
+            st.markdown(
+                f'<div style="background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.4);'
+                f'border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;'
+                f'align-items:center;gap:10px">'
+                f'<span style="font-size:16px">⚡</span>'
+                f'<div><span style="color:{GOLD};font-weight:700;font-size:13px">'
+                f'FORWARD PREDICTION — OUTCOME PENDING</span><br>'
+                f'<span style="color:#94A3B8;font-size:12px">'
+                f'Apr→Sep {latest_year} OJ direction not yet known · resolves September {latest_year}'
+                f'</span></div></div>',
+                unsafe_allow_html=True,
+            )
         st.markdown(
             f'<div style="background:{sig_bg};border:1px solid {sig_color}33;border-radius:16px;'
             f'padding:32px;text-align:center;margin-bottom:16px;overflow:visible">'
@@ -923,7 +952,7 @@ with tab5:
 
     with right:
         # Signal history — completed years only (exclude pending)
-        st.markdown("**Signal history — last completed years**")
+        st.markdown("**Signal history — last 8 completed years**")
         hist5 = df[
             df["signal"].notna() & (df["signal"] != "NEUTRAL") & df["correct"].notna()
         ].tail(8).copy()
