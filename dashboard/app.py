@@ -325,12 +325,13 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
 # TAB 1 · OVERVIEW
 # ─────────────────────────────────────────────────────────────────────────────
 with tab1:
-    prod_25  = df.loc[latest_year, "production_boxes"] / 1e6
-    prod_05  = df.loc[2005, "production_boxes"] / 1e6
-    acres_25 = df.loc[latest_year, "bearing_acres"]
-    acres_05 = df.loc[2005, "bearing_acres"]
-    apr_25   = df.loc[latest_year, "apr_close"]
-    apr_05   = df.loc[2005, "apr_close"]
+    _prod_raw = df.loc[latest_year, "production_boxes"]
+    prod_25   = _prod_raw / 1e6 if pd.notna(_prod_raw) else None
+    prod_05   = df.loc[2005, "production_boxes"] / 1e6
+    acres_25  = df.loc[latest_year, "bearing_acres"]
+    acres_05  = df.loc[2005, "bearing_acres"]
+    apr_25    = df.loc[latest_year, "apr_close"]
+    apr_05    = df.loc[2005, "apr_close"]
 
     k1, k2, k3, k4 = st.columns(4)
 
@@ -344,15 +345,23 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-    card(k1, f"{latest_year} Production {tip('yield_surprise')}",
-         f"{prod_25:.1f}M boxes",
-         f"{(prod_25/prod_05-1)*100:.0f}% vs 2005 peak",
-         ORANGE, RED)
+    if prod_25 is not None:
+        card(k1, f"{latest_year} Production {tip('yield_surprise')}",
+             f"{prod_25:.1f}M boxes",
+             f"{(prod_25/prod_05-1)*100:.0f}% vs 2005 peak",
+             ORANGE, RED)
+    else:
+        card(k1, f"{latest_year} Production {tip('yield_surprise')}",
+             "Pending", "NASS not yet released", GRAY, GRAY)
 
-    card(k2, f"Bearing Acres {tip('bearing_acres')}",
-         f"{acres_25/1e3:.0f}K",
-         f"{(acres_25/acres_05-1)*100:.0f}% vs 2005",
-         BLUE, RED)
+    if pd.notna(acres_25):
+        card(k2, f"Bearing Acres {tip('bearing_acres')}",
+             f"{acres_25/1e3:.0f}K",
+             f"{(acres_25/acres_05-1)*100:.0f}% vs 2005",
+             BLUE, RED)
+    else:
+        card(k2, f"Bearing Acres {tip('bearing_acres')}",
+             "Pending", "NASS not yet released", GRAY, GRAY)
 
     card(k3, f"Apr {latest_year} OJ Price {tip('fcoj')}",
          f"{apr_25:.0f}¢/lb",
@@ -894,6 +903,7 @@ with tab5:
 
         # Outcome card
         actual_move = ((sep - apr) / apr * 100) if pd.notna(apr) and pd.notna(sep) else None
+        sep_txt = f"{sep:.1f}¢" if pd.notna(sep) else "Pending"
         st.markdown(
             f'<div class="card" style="text-align:left">'
             f'<div class="card-label">OUTCOME · {latest_year}</div>'
@@ -901,7 +911,7 @@ with tab5:
             f'<tr><td style="color:#64748b;padding:4px 0">Apr close</td>'
             f'    <td style="text-align:right;font-weight:600">{apr:.1f}¢</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">Sep close</td>'
-            f'    <td style="text-align:right;font-weight:600">{sep:.1f}¢</td></tr>'
+            f'    <td style="text-align:right;font-weight:600">{sep_txt}</td></tr>'
             f'<tr><td style="color:#64748b;padding:4px 0">Actual move</td>'
             f'    <td style="text-align:right;font-weight:600">'
             f'    {f"{actual_move:+.1f}%" if actual_move is not None else "N/A"}</td></tr>'
@@ -912,16 +922,18 @@ with tab5:
         )
 
     with right:
-        # Last 5 years signal history
-        st.markdown("**Signal history — last 5 completed years**")
-        hist5 = df[df["signal"].notna() & (df["signal"] != "NEUTRAL")].tail(8).copy()
+        # Signal history — completed years only (exclude pending)
+        st.markdown("**Signal history — last completed years**")
+        hist5 = df[
+            df["signal"].notna() & (df["signal"] != "NEUTRAL") & df["correct"].notna()
+        ].tail(8).copy()
 
         for yr, row in hist5.iterrows():
             s     = row["signal"]
             c     = row["correct"]
             sc    = GREEN if s == "LONG" else RED
-            cc    = GREEN if c else RED
-            cm    = "✓" if c else "✗"
+            cc    = GREEN if c is True else RED
+            cm    = "✓" if c is True else "✗"
             move  = (row["sep_close"] - row["apr_close"]) / row["apr_close"] * 100
             st.markdown(
                 f'<div style="display:flex;align-items:center;background:#1a1d2e;'
@@ -943,20 +955,43 @@ with tab5:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Forward signal note
-        st.markdown(
-            f'<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);'
-            f'border-radius:12px;padding:18px">'
-            f'<div style="color:{GOLD};font-weight:700;font-size:13px;margin-bottom:8px">⚡ 2026 Forward Signal</div>'
-            f'<div style="color:#94A3B8;font-size:13px;line-height:1.6">'
-            f'The 2026 signal (Apr→Sep 2026 OJ direction) requires <strong>Jan–Mar 2026 NDVI</strong> '
-            f'from GEE — data is available now.<br><br>'
-            f'<code style="background:#0f1117;padding:4px 8px;border-radius:4px;font-size:12px">'
-            f'python data_pipeline.py  # set END_YEAR=2026</code>'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        # Forward signal — live prediction for the current year
+        fwd = df[df["correct"].isna() & df["signal"].isin(["LONG", "SHORT"])]
+        if not fwd.empty:
+            fwd_yr   = int(fwd.index[-1])
+            fwd_row  = fwd.iloc[-1]
+            fwd_sig  = fwd_row["signal"]
+            fwd_sc   = GREEN if fwd_sig == "LONG" else RED
+            fwd_apr  = fwd_row["apr_close"]
+            fwd_surp = fwd_row["ndvi_surprise"]
+            apr_txt  = f"{fwd_apr:.1f}¢ entry" if pd.notna(fwd_apr) else "entry TBD"
+            direction_txt = "above Apr close → ✓" if fwd_sig == "LONG" else "below Apr close → ✓"
+            st.markdown(
+                f'<div style="background:{fwd_sc}11;border:1px solid {fwd_sc}44;'
+                f'border-radius:12px;padding:18px">'
+                f'<div style="color:{GOLD};font-weight:700;font-size:13px;margin-bottom:10px">'
+                f'⚡ {fwd_yr} Forward Signal</div>'
+                f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+                f'<div style="background:{fwd_sc}22;color:{fwd_sc};font-weight:800;'
+                f'padding:6px 18px;border-radius:999px;font-size:18px">{fwd_sig}</div>'
+                f'<div style="color:#94A3B8;font-size:13px">'
+                f'NDVI surprise <b style="color:{fwd_sc}">{fwd_surp:+.4f}</b></div>'
+                f'</div>'
+                f'<div style="color:#94A3B8;font-size:12px;line-height:1.7">'
+                f'Entry: <strong style="color:#E2E8F0">{apr_txt}</strong><br>'
+                f'Prediction: Sep 2026 OJ {direction_txt}<br>'
+                f'Outcome: <strong style="color:{GOLD}">Pending — resolves Sep 2026</strong>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div style="background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.2);'
+                f'border-radius:12px;padding:18px;color:#64748b;font-size:13px">'
+                f'No forward signal — run <code>python data_pipeline.py</code> to update.</div>',
+                unsafe_allow_html=True,
+            )
 
     # Signal gauge (mini)
     st.markdown("<br>", unsafe_allow_html=True)

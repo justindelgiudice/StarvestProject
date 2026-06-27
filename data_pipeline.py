@@ -36,8 +36,9 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-START_YEAR  = 2005
-END_YEAR    = 2025
+NDVI_START_YEAR = 2002   # extra years so 2005-2007 get full 3-yr rolling baselines
+START_YEAR      = 2005
+END_YEAR        = 2026
 GEE_PROJECT = os.getenv("GEE_PROJECT")
 NASS_API_KEY = os.getenv("NASS_API_KEY")
 NASS_BASE    = "https://quickstats.nass.usda.gov/api/api_GET/"
@@ -68,7 +69,7 @@ def get_ndvi_time_series():
     citrus_belt = ee.Geometry.Rectangle([-82.5, 26.5, -80.0, 28.5])
     ndvi_by_year = {}
 
-    for year in range(START_YEAR, END_YEAR + 1):
+    for year in range(NDVI_START_YEAR, END_YEAR + 1):
         collection = (
             ee.ImageCollection("MODIS/061/MOD13Q1")
             .filterDate(f"{year}-01-01", f"{year}-03-31")
@@ -221,19 +222,28 @@ def get_oj_prices():
             apr = year_monthly[year_monthly.index.month == 4]
             sep = year_monthly[year_monthly.index.month == 9]
 
-            if not apr.empty and not sep.empty:
+            if not apr.empty:
                 apr_close = round(float(apr.iloc[0]), 2)
-                sep_close = round(float(sep.iloc[0]), 2)
-                direction = 1 if sep_close > apr_close else -1
-                prices[year] = {
-                    "apr_close":       apr_close,
-                    "sep_close":       sep_close,
-                    "price_direction": direction,
-                }
-                arrow = "↑" if direction == 1 else "↓"
-                print(f"  {year}: Apr={apr_close:.1f}¢  Sep={sep_close:.1f}¢  {arrow}")
+                if not sep.empty:
+                    sep_close = round(float(sep.iloc[0]), 2)
+                    direction = 1 if sep_close > apr_close else -1
+                    prices[year] = {
+                        "apr_close":       apr_close,
+                        "sep_close":       sep_close,
+                        "price_direction": direction,
+                    }
+                    arrow = "↑" if direction == 1 else "↓"
+                    print(f"  {year}: Apr={apr_close:.1f}¢  Sep={sep_close:.1f}¢  {arrow}")
+                else:
+                    # Sep not yet settled — forward-looking year
+                    prices[year] = {
+                        "apr_close":       apr_close,
+                        "sep_close":       None,
+                        "price_direction": None,
+                    }
+                    print(f"  {year}: Apr={apr_close:.1f}¢  Sep=pending")
             else:
-                print(f"  {year}: missing Apr or Sep data")
+                print(f"  {year}: missing Apr data")
 
         return prices
 
@@ -535,10 +545,22 @@ def build_dataset(
     """
     print("\n[7/7] Merging datasets and computing signals...")
 
+    # Pre-compute NDVI rolling baseline on extended frame (NDVI_START_YEAR-2025)
+    # so that 2005, 2006, and 2007 all get a proper 3-year prior average.
+    _ndvi_full = pd.Series(
+        {yr: ndvi.get(yr) for yr in range(NDVI_START_YEAR, END_YEAR + 1)}
+    )
+    _ndvi_3yr_avg = (
+        _ndvi_full.shift(1).rolling(window=3, min_periods=2).mean().round(4)
+    )
+    _ndvi_surprise = (_ndvi_full - _ndvi_3yr_avg).round(4)
+
     rows = []
     for year in range(START_YEAR, END_YEAR + 1):
         row = {"year": year}
-        row["ndvi_jan_mar"] = ndvi.get(year)
+        row["ndvi_jan_mar"]  = ndvi.get(year)
+        row["ndvi_3yr_avg"]  = _ndvi_3yr_avg.get(year)
+        row["ndvi_surprise"] = _ndvi_surprise.get(year)
 
         nass_year = nass.get(year, {})
         row["production_boxes"] = nass_year.get("production_boxes")
@@ -560,14 +582,6 @@ def build_dataset(
         rows.append(row)
 
     df = pd.DataFrame(rows).set_index("year")
-
-    df["ndvi_3yr_avg"] = (
-        df["ndvi_jan_mar"].shift(1)
-        .rolling(window=3, min_periods=2)
-        .mean()
-        .round(4)
-    )
-    df["ndvi_surprise"] = (df["ndvi_jan_mar"] - df["ndvi_3yr_avg"]).round(4)
 
     df["yield_yoy_pct"] = (
         df["production_boxes"].pct_change().mul(100).round(2)
@@ -598,7 +612,7 @@ def build_dataset(
 def main():
     print("=" * 60)
     print("  STARVEST DATA PIPELINE")
-    print("  2005-2025 | MODIS + NASS + OJ + Freeze + Brazil FAS + FL Rainfall")
+    print(f"  {START_YEAR}-{END_YEAR} | MODIS + NASS + OJ + Freeze + Brazil FAS + FL Rainfall")
     print("=" * 60)
 
     ndvi     = get_ndvi_time_series()
@@ -616,14 +630,15 @@ def main():
     print(df.to_string())
     print(f"{'='*60}")
 
-    print("\nData completeness:")
+    n_years = len(df)
+    print(f"\nData completeness ({n_years} years total):")
     for col in ["ndvi_jan_mar", "production_boxes", "bearing_acres",
                 "apr_close", "sep_close", "price_direction",
                 "freeze_flag", "freeze_days", "min_temp_janmar_f",
                 "brazil_production_mt", "brazil_yoy_pct",
                 "fl_rainfall_jan_mar_inches", "fl_rainfall_below_avg"]:
         n_valid = df[col].notna().sum()
-        print(f"  {col}: {n_valid}/21 years")
+        print(f"  {col}: {n_valid}/{n_years} years")
 
 
 if __name__ == "__main__":
