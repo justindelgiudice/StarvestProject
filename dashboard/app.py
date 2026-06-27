@@ -190,8 +190,9 @@ def compute_signals(df: pd.DataFrame, threshold: float = 0.0) -> pd.DataFrame:
 
 df = compute_signals(raw, threshold=0.0)
 
-latest_year = df.index.max()
-latest      = df.loc[latest_year]
+latest_year  = df.index.max()
+latest       = df.loc[latest_year]
+_rain_mean   = raw["fl_rainfall_jan_mar_inches"].mean()  # recomputed each run, includes all years
 bt0         = df[df["correct"].notna()].copy()
 hit0        = bt0["correct"].sum() / len(bt0) if len(bt0) else 0
 
@@ -630,6 +631,7 @@ with tab3:
 | 2023 | Hurricane Ian (Oct 2022) + HLB | **15.8M** — record low | ↑ 276¢ → 341¢ (+24%) |
 | 2024 | Supply shock ongoing | 18M | ↑ 369¢ → 497¢ (+35%) |
 | 2025 | Continued HLB collapse | 12.3M | ↓ 267¢ → 241¢ (demand destruction?) |
+| 2026 | Hard freeze Jan-Mar (24.1°F, 2 days) + drought | 12.2M prelim | Apr 179¢ · Sep pending → **LONG signal** |
 """)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -741,7 +743,7 @@ with tab4:
             '<b style="color:#94A3B8">Brazil:</b> LONG valid only when Brazilian production also '
             'fell YoY (global tightening); SHORT valid only when Brazil rose YoY. '
             '<b style="color:#94A3B8">Dry Jan-Mar (LONG only):</b> additionally requires FL citrus-belt '
-            'rainfall was below the 2005-2025 mean of 6.26 in — drought compounds NDVI stress. '
+            f'rainfall was below the dataset mean of {_rain_mean:.2f} in — drought compounds NDVI stress. '
             'Sources: USDA FAS PSD · NOAA GHCN-Daily (Avon Park 2W + Sebring).'
             '</div>',
             unsafe_allow_html=True,
@@ -1008,8 +1010,8 @@ with tab5:
                 f'</div>'
                 f'<div style="color:#94A3B8;font-size:12px;line-height:1.7">'
                 f'Entry: <strong style="color:#E2E8F0">{apr_txt}</strong><br>'
-                f'Prediction: Sep 2026 OJ {direction_txt}<br>'
-                f'Outcome: <strong style="color:{GOLD}">Pending — resolves Sep 2026</strong>'
+                f'Prediction: Sep {fwd_yr} OJ {direction_txt}<br>'
+                f'Outcome: <strong style="color:{GOLD}">Pending — resolves Sep {fwd_yr}</strong>'
                 f'</div>'
                 f'</div>',
                 unsafe_allow_html=True,
