@@ -2,7 +2,7 @@
 title: Starvest
 emoji: 🍊
 colorFrom: green
-colorTo: orange
+colorTo: yellow
 sdk: streamlit
 sdk_version: "1.58.0"
 app_file: dashboard/app.py
