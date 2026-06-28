@@ -145,7 +145,7 @@ PLOTLY_CONFIG = {
 PLOTLY_CONFIG_STATIC = {"scrollZoom": False, "displayModeBar": False}
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
