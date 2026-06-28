@@ -5,5 +5,5 @@ cd "$(dirname "$0")"
 source venv/bin/activate
 streamlit run dashboard/app.py \
   --server.port 8501 \
-  --server.address 127.0.0.1 \
+  --server.address 0.0.0.0 \
   --server.headless true
