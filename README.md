@@ -1,3 +1,14 @@
+---
+title: Starvest
+emoji: 🍊
+colorFrom: green
+colorTo: orange
+sdk: streamlit
+sdk_version: "1.58.0"
+app_file: dashboard/app.py
+pinned: false
+---
+
 # 🍊 Starvest
 
 **A satellite-driven trading signal for OJ futures — built on NASA MODIS data.**
