@@ -111,8 +111,8 @@ Starvest/
 
 | Metric | Value |
 |---|---|
-| Signal hit rate | ~65% directional accuracy |
-| Years with signal | 17 / 21 |
+| Signal hit rate | 62% directional accuracy (13/21 years correct) |
+| Years with signal | 22 / 22 (all years produced a non-neutral signal) |
 | Baseline for comparison | ~52–54% (typical quant commodity signal) |
 
 *Returns are Apr→Sep price moves; excludes futures margin, roll costs, and slippage.*
