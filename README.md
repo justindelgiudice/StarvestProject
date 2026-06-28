@@ -5,7 +5,7 @@ colorFrom: green
 colorTo: yellow
 sdk: streamlit
 sdk_version: "1.58.0"
-app_file: dashboard/app.py
+app_file: app.py
 pinned: false
 ---
 

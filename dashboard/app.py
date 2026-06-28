@@ -145,7 +145,8 @@ PLOTLY_CONFIG = {
 PLOTLY_CONFIG_STATIC = {"scrollZoom": False, "displayModeBar": False}
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent.parent
+_here = Path(__file__).parent
+ROOT = _here if (_here / "starvest_data.csv").exists() else _here.parent
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
