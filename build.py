@@ -81,6 +81,7 @@ def compute_signals(df, threshold=0.0):
     d["trade_ret"] = d.apply(_ret, axis=1)
     return d
 
+raw = raw.sort_index()
 df = compute_signals(raw)
 latest_year = df.index.max()
 latest = df.loc[latest_year]
