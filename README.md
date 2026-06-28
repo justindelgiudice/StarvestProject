@@ -116,3 +116,9 @@ Starvest/
 | Baseline for comparison | ~52–54% (typical quant commodity signal) |
 
 *Returns are Apr→Sep price moves; excludes futures margin, roll costs, and slippage.*
+
+---
+
+## AI usage
+
+This project was built with assistance from [Claude Code](https://claude.ai/code) (Anthropic). AI was used to help write and debug code, structure the dashboard, and draft documentation. All data, analysis logic, and signal design are my own work.
