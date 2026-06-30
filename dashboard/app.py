@@ -150,7 +150,7 @@ ROOT = _here if (_here / "starvest_data.csv").exists() else _here.parent
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
-    return pd.read_csv(ROOT / "starvest_data.csv", index_col="year")
+    return pd.read_csv(ROOT / "starvest_data.csv", index_col="year").sort_index()
 
 raw = load_data()
 
@@ -1103,3 +1103,18 @@ with tab6:
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown(
+    '<hr style="border-color:rgba(255,255,255,0.06);margin:40px 0 16px">'
+    '<div style="display:flex;justify-content:space-between;align-items:center;'
+    'flex-wrap:wrap;gap:8px;padding-bottom:24px">'
+    '<div style="color:#334155;font-size:12px">'
+    '🍊 <b style="color:#475569">Starvest</b> · Florida OJ Futures Signal Dashboard</div>'
+    '<div style="color:#334155;font-size:12px">'
+    'Built by <b style="color:#475569">Justin Del Giudice</b> · '
+    'Data: MODIS GEE · USDA NASS · ICE Futures · NOAA'
+    '</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
