@@ -330,7 +330,10 @@ with tab1:
     _prod_raw = df.loc[latest_year, "production_boxes"]
     prod_25   = _prod_raw / 1e6 if pd.notna(_prod_raw) else None
     prod_05   = df.loc[2005, "production_boxes"] / 1e6
-    acres_25  = df.loc[latest_year, "bearing_acres"]
+    # Bearing acres: use most recent available year (current year may be NaN if NASS not yet released)
+    _acres_series = df["bearing_acres"].dropna()
+    acres_yr  = int(_acres_series.index[-1])
+    acres_25  = _acres_series.iloc[-1]
     acres_05  = df.loc[2005, "bearing_acres"]
     apr_25    = df.loc[latest_year, "apr_close"]
     apr_05    = df.loc[2005, "apr_close"]
@@ -356,14 +359,10 @@ with tab1:
         card(k1, f"{latest_year} Production {tip('yield_surprise')}",
              "Pending", "NASS not yet released", GRAY, GRAY)
 
-    if pd.notna(acres_25):
-        card(k2, f"Bearing Acres {tip('bearing_acres')}",
-             f"{acres_25/1e3:.0f}K",
-             f"{(acres_25/acres_05-1)*100:.0f}% vs 2005",
-             BLUE, RED)
-    else:
-        card(k2, f"Bearing Acres {tip('bearing_acres')}",
-             "Pending", "NASS not yet released", GRAY, GRAY)
+    card(k2, f"{acres_yr} Bearing Acres {tip('bearing_acres')}",
+         f"{acres_25/1e3:.0f}K",
+         f"{(acres_25/acres_05-1)*100:.0f}% vs 2005",
+         BLUE, RED)
 
     card(k3, f"Apr {latest_year} OJ Price {tip('fcoj')}",
          f"{apr_25:.0f}¢/lb",
